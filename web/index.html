@@ -279,12 +279,13 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 /* Marker tooltip */
 .marker-tooltip {
-  position: absolute; background: var(--surface-3); border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm); padding: 6px 10px; font-size: 12px;
-  color: var(--text-primary); pointer-events: none; z-index: 30;
-  white-space: nowrap; display: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  position: fixed; background: var(--surface-3); border: 1px solid var(--accent);
+  border-radius: var(--radius-sm); padding: 4px 8px; font-size: 11px;
+  font-family: var(--font-mono); color: var(--text-primary);
+  pointer-events: none; z-index: 50; white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 }
+.marker-tooltip.hidden { display: none; }
 
 /* Progress bar */
 .progress-bar-container {
@@ -310,6 +311,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <button onclick="document.getElementById('ref-input').click()">📺 参考</button>
   <button id="btn-save" onclick="saveProject()">💾 保存</button>
   <button id="btn-load" onclick="showSessions()">📋 打开</button>
+  <button id="btn-auto" onclick="autoCompose()" title="基于标记点AI自动生成初稿">🤖 AI初稿</button>
   <button id="btn-render" class="primary" onclick="renderDirect()">🎬 渲染 <span class="kbd">⌘R</span></button>
   <button id="btn-cancel-render" onclick="cancelRender()" style="display:none;background:#EF4444;border-color:#EF4444">⏹ 取消</button>
   <button id="btn-undo" onclick="sendCmd('撤销')" class="icon-btn" title="撤销">↩</button>
@@ -348,6 +350,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
     </div>
 
     <div id="marker-list" class="hidden"></div>
+    <div id="marker-tooltip" class="marker-tooltip hidden"></div>
 
     <div id="timeline-strip">
       <canvas id="tl-strip-canvas"></canvas>
@@ -720,6 +723,36 @@ document.getElementById('timeline-strip').addEventListener('contextmenu', e => {
   const t = pct * videoDuration;
   removeNearestMarker(t);
 });
+
+// Hover tooltip on timeline: show marker time + frame
+const tooltip = document.getElementById('marker-tooltip');
+document.getElementById('timeline-strip').addEventListener('mousemove', e => {
+  if (!videoDuration || !markers.length) { tooltip.classList.add('hidden'); return; }
+  const rect = e.target.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const t = (x / rect.width) * videoDuration;
+  const near = markers.find(m => Math.abs(m.time - t) < 0.8);
+  if (near) {
+    const frame = Math.round(near.time * 30);
+    tooltip.textContent = `${fmtTime(near.time)} · 第${frame}帧${near.label ? ' · ' + near.label : ''}`;
+    tooltip.classList.remove('hidden');
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY - 30) + 'px';
+  } else {
+    tooltip.classList.add('hidden');
+  }
+});
+document.getElementById('timeline-strip').addEventListener('mouseleave', () => tooltip.classList.add('hidden'));
+
+// AI 自动初稿 — 基于标记点直接生成片段
+async function autoCompose() {
+  if (!sessionId) { addMsg('agent', '⚠️ 请先加载视频'); return; }
+  if (!markers.length) { addMsg('agent', '⚠️ 请先在预览台打标记'); return; }
+  if (!ws || ws.readyState !== WebSocket.OPEN) { addMsg('agent', '⚠️ 未连接服务器'); return; }
+
+  showOverlay('AI 生成初稿中…');
+  ws.send(JSON.stringify({ text: 'auto_compose' }));
+}
 
 // ═══════════════════════════════════════════
 // KEYBOARD SHORTCUTS

@@ -124,6 +124,8 @@ class NLUParser:
             return {"action": "query", "target": "timeline"}
 
         # AI 方案相关
+        if re.search(r'auto_compose|自动初稿|自动生成|自动剪辑|AI.*初稿|智能.*生成', t):
+            return {"action": "auto_compose"}
         if re.search(r'^执行方案|^应用方案|^按方案|^确认.*方案', t):
             return {"action": "execute_plan"}
         if re.search(r'^[给帮].*方案|^推荐.*方案|^怎么剪|^帮我.*剪|^怎么做|^我想.*做|^我能.*做', t):

@@ -332,6 +332,22 @@ class EditSession:
                 result["success"] = False
                 result["message"] = action.get("reason", "无法理解指令")
 
+            elif act == "auto_compose":
+                # 自动生成初稿：先出方案，再自动执行
+                if not self.markers:
+                    result["success"] = False
+                    result["message"] = "请先在预览台打标记"
+                else:
+                    # 生成方案
+                    plan_result = self._quick_plan_from_markers("AI自动初稿")
+                    # 自动执行
+                    exec_result = self.execute_plan()
+                    result.update(plan_result)
+                    result.update(exec_result)
+                    result["message"] = f"🤖 AI初稿完成：{exec_result.get('message', '')}"
+                    result["display"] = plan_result.get("display", "")
+                    result["timeline"] = self.timeline.to_list()
+
             elif act == "propose":
                 # AI 生成剪辑方案
                 intent = action.get("intent", "")
