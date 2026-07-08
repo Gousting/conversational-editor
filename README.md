@@ -2,7 +2,7 @@
 
 > 用文字对话替代手动拖拽时间轴。AI 执行剪辑操作，人做创意决策。
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue)](VERSION)
 [![Python](https://img.shields.io/badge/python-3.10%2B-green)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 
@@ -37,10 +37,17 @@ AI:  ✅ 已插入 flash 过渡 (0.3s, #FFE4B5 暖色柔光)
 - 👁️ **实时预览** — 时间轴只读色块 + 播放头同步
 
 ### 渲染 & 导出
-- 🎬 **一键渲染** — 直接渲染按钮，不经过 NLU
-- 📊 **进度反馈** — ffmpeg `-progress` 实时轮询进度条
+- 🎬 **管道渲染** — YAML 驱动的多阶段生产流水线（验证→音频→字幕→合成→质检）
+- 📊 **阶段进度** — 每阶段独立状态 + Finding 质检反馈
 - ⏹ **取消渲染** — 随时中止
 - 📤 **多平台导出** — 抖音 9:16 / B站 16:9 / 方形 1:1 / 原比例
+
+### 管道系统 (v0.3)
+- 🔧 **声明式管道** — YAML 定义阶段、输入输出、质检标准
+- ✅ **结构化质检** — 遵循 CHAI 规则（Accurate/Complete/Constructive）的 Finding 体系
+- 📦 **Artifact 链** — 阶段间通过规范化 Artifact 传递数据
+- 💾 **Checkpoint** — 关键节点存档，支持断点续跑
+- 🧩 **可扩展** — `STAGE_HANDLERS` 注册表，自定义阶段处理器
 
 ### 高级特性
 - 🌈 **xfade 真转场** — filter_complex 实现，支持 flash→fadewhite, dissolve→fade
@@ -108,12 +115,19 @@ render:
 ## 架构
 
 ```
+                    ┌─ pipelines/game-highlight.yaml ─┐
+                    │  validate → audio → subtitle     │
+                    │  → compose → quality_check       │
+                    └────────────┬─────────────────────┘
+                                 │
 前端 (index.html)  ←WebSocket→  FastAPI 服务层  ←ffmpeg→  渲染引擎
     │                                │
     ├ 视频预览 (HTML Video)          ├ NLU 解析 (LLM + 规则)
     ├ 时间轴 (Canvas 只读)           ├ Session 管理
     ├ 对话面板                       ├ 技能系统
-    └ LLM 配置面板                   └ 参考视频分析 (VLM)
+    ├ 管道进度 UI                    ├ 管道引擎 (PipelineEngine)
+    └ LLM 配置面板                   ├ 质检引擎 (Reviewer)
+                                     └ Artifact 链
 ```
 
 详见 [DESIGN.md](DESIGN.md)
@@ -126,6 +140,7 @@ render:
 |---|------|
 | 后端 | FastAPI + WebSocket |
 | 渲染 | ffmpeg (concat demuxer + filter_complex xfade) |
+| 管道 | YAML 驱动 + Artifact 链 + CHAI 质检协议 |
 | NLU | Ollama / OpenAI / 规则引擎兜底 |
 | 前端 | 纯 HTML/CSS/JS，零框架 |
 | 持久化 | JSON 文件存储 (`/tmp/conversational-editor/sessions/`) |
@@ -144,10 +159,82 @@ render:
 
 ---
 
+## 管道系统 (v0.3 新增)
+
+管道是 YAML 定义的声明式生产流水线。渲染不再是一个黑盒调用，而是分阶段执行、每阶段产出可检查的结构化 Artifact。
+
+### 管道定义
+
+`pipelines/game-highlight.yaml`：
+
+```yaml
+stages:
+  - name: validate         # 验证时间轴合法性
+    produces: validation_report
+    review_focus:
+      - 每个片段时长 ≥ 1.5 秒
+      - 过渡参数合法
+    success_criteria:
+      - clip_count ≥ 1
+
+  - name: audio_prep       # 音频准备
+    requires: validation_report
+    produces: audio_manifest
+    review_focus:
+      - BGM 与对白音量比 1:4 ~ 1:3
+
+  - name: subtitle         # 字幕生成
+    requires: [validation_report, audio_manifest]
+    produces: subtitle_manifest
+
+  - name: compose          # 视频合成
+    requires: [validation_report, audio_manifest, subtitle_manifest]
+    produces: composition_report
+
+  - name: quality_check    # 质量检查
+    requires: composition_report
+    produces: qc_report
+    success_criteria:
+      - black_frames = 0
+      - audio_present = true
+```
+
+### Artifact 类型
+
+| Artifact | 阶段 | 关键字段 |
+|----------|------|---------|
+| `ValidationReport` | validate | clip_count, total_duration, passed |
+| `AudioManifest` | audio_prep | tracks, bgm_volume_db, peak_level |
+| `SubtitleManifest` | subtitle | subtitles, style, srt_path |
+| `CompositionReport` | compose | output_path, file_size_bytes, xfade_transitions |
+| `QCReport` | quality_check | black_frames, audio_present, passed |
+
+### 质检协议
+
+遵循 CHAI 规则（借鉴 OpenMontage）：
+
+- **Accurate** — 每条 Finding 指向具体字段/帧号
+- **Complete** — 发现一个问题后扫描同类全貌
+- **Constructive** — critical 必须附带修复方案
+
+### 自定义阶段
+
+```python
+from engine.pipeline import PipelineEngine, STAGE_HANDLERS
+
+def my_handler(stage_config, session, inputs, checkpoint_dir):
+    return MyArtifact(...)
+
+STAGE_HANDLERS["my_stage"] = my_handler
+```
+
+---
+
 ## 版本
 
-当前版本：**0.2.0**
+当前版本：**0.3.0**
 
+- 0.3.0 — 声明式管道架构（Artifact + Reviewer + PipelineEngine + CHAI 质检）
 - 0.2.0 — P0-P2 完整实现（渲染/导出/会话持久化/xfade/参考视频/风格指纹）
 - 0.1.0 — MVP（视频加载 + NLU 对话 + 基础渲染）
 
