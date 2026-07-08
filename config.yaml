@@ -1,0 +1,22 @@
+# 对话式视频剪辑工作台 — 配置
+
+server:
+  host: "0.0.0.0"
+  port: 8765
+
+ollama:
+  url: "http://192.168.0.104:11434"
+  model: "qwen3.5:9b"
+  fallback_enabled: true  # Ollama 离线时用规则引擎兜底
+
+render:
+  output_dir: "/tmp/conversational-editor"
+  preview:
+    width: 854
+    height: 480
+    crf: 32        # 低质量快速预览
+  final:
+    crf: 23        # 最终输出质量
+
+undo:
+  max_stack: 50    # 最大撤销步数

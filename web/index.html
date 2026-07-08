@@ -1,0 +1,1194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ConvEdit — 对话式视频剪辑工作台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@500;600;700&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ground: #08090A;
+  --surface-1: #16171C;
+  --surface-2: #1E1F25;
+  --surface-3: #26272E;
+  --hairline: rgba(255,255,255,0.06);
+  --text-primary: #F7F8F8;
+  --text-secondary: #9CA3AF;
+  --text-muted: #6B7280;
+  --accent: #5E6AD2;
+  --accent-dim: rgba(94,106,210,0.12);
+  --accent-glow: rgba(94,106,210,0.25);
+  --marker-color: #F59E0B;
+  --marker-dim: rgba(245,158,11,0.3);
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --font-display: 'Inter Tight', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-body); font-size: 14px; line-height: 1.55;
+  color: var(--text-primary); background: var(--ground);
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; gap: 8px;
+  height: 44px; padding: 0 12px;
+  background: var(--surface-1); border-bottom: 1px solid var(--hairline);
+  flex-shrink: 0; z-index: 10;
+}
+header .brand { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: -0.02em; }
+header .sep { width: 1px; height: 20px; background: var(--hairline); margin: 0 4px; }
+header .spacer { flex: 1; }
+header button {
+  height: 28px; padding: 0 10px;
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text-secondary);
+  font-family: var(--font-body); font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: all 150ms var(--ease); white-space: nowrap;
+  display: flex; align-items: center; gap: 4px;
+}
+header button:hover { color: var(--text-primary); border-color: rgba(255,255,255,0.1); background: var(--surface-3); }
+header button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+header button.primary:hover { background: #6F7AE0; }
+header button.icon-btn { width: 28px; padding: 0; justify-content: center; font-size: 14px; }
+header .kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); background: var(--surface-3); padding: 1px 4px; border-radius: 2px; }
+header .status {
+  font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);
+  padding: 2px 8px; background: var(--surface-2); border-radius: var(--radius-sm); border: 1px solid var(--hairline);
+}
+
+/* ── Main Layout ── */
+main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+/* ── Preview Stage ── */
+#preview-stage { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
+
+#player-viewport {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  background: #000; position: relative; min-height: 0;
+}
+#player-viewport video { max-width: 100%; max-height: 100%; }
+#player-viewport img { max-width: 100%; max-height: 100%; object-fit: contain; }
+#player-placeholder {
+  color: var(--text-muted); font-family: var(--font-display);
+  font-size: 15px; font-weight: 500; letter-spacing: -0.01em;
+  pointer-events: none;
+}
+
+/* Marker overlay on video */
+#marker-overlay {
+  position: absolute; bottom: 0; left: 0; right: 0; height: 6px;
+  pointer-events: none; z-index: 5;
+}
+
+/* Player controls bar */
+#player-bar {
+  height: 40px; display: flex; align-items: center; gap: 8px;
+  padding: 0 12px; background: var(--surface-1);
+  border-bottom: 1px solid var(--hairline); flex-shrink: 0;
+}
+#player-bar button {
+  height: 26px; width: 26px; padding: 0; border: none; border-radius: 4px;
+  background: transparent; color: var(--text-secondary); font-size: 14px;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: all 100ms var(--ease);
+}
+#player-bar button:hover { color: var(--text-primary); background: var(--surface-2); }
+#player-bar button.active { color: var(--accent); }
+#player-bar input[type="range"] {
+  flex: 1; height: 4px; -webkit-appearance: none; appearance: none;
+  background: var(--surface-3); border-radius: 2px; outline: none;
+}
+#player-bar input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%; background: var(--accent); cursor: pointer;
+}
+#player-bar .time-display { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); min-width: 90px; text-align: center; }
+#player-bar .marker-hint { font-size: 10px; color: var(--text-muted); opacity: 0; transition: opacity 200ms; }
+#player-bar .marker-hint.visible { opacity: 1; }
+
+/* ── Timeline Strip ── */
+#timeline-strip {
+  height: 52px; position: relative; flex-shrink: 0;
+  background: var(--surface-1); border-bottom: 1px solid var(--hairline);
+  cursor: pointer; overflow: hidden;
+}
+#tl-strip-canvas { width: 100%; height: 100%; display: block; }
+
+/* ── Chat Panel ── */
+#chat-panel {
+  border-top: 1px solid var(--hairline); background: var(--surface-1);
+  display: flex; flex-direction: column; flex-shrink: 0;
+  transition: height 250ms var(--ease);
+}
+#chat-panel.expanded { height: 280px; }
+#chat-panel.collapsed { height: 0; overflow: hidden; border-top: none; }
+
+#chat-toggle {
+  position: absolute; bottom: 0; right: 16px; z-index: 20;
+  height: 26px; padding: 0 12px; border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: var(--surface-2); color: var(--text-muted);
+  font-size: 11px; font-weight: 500; cursor: pointer;
+  transition: all 150ms var(--ease);
+  margin-bottom: -1px;
+}
+#chat-toggle:hover { color: var(--text-primary); border-color: rgba(255,255,255,0.1); }
+#chat-toggle .count { color: var(--marker-color); }
+
+#chat-log {
+  flex: 1; overflow-y: auto; padding: 8px 16px;
+  display: flex; flex-direction: column; gap: 6px; min-height: 0;
+}
+#chat-log::-webkit-scrollbar { width: 4px; }
+#chat-log::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 2px; }
+
+.msg {
+  padding: 8px 12px; border-radius: var(--radius-sm);
+  font-size: 13px; line-height: 1.5; max-width: 100%;
+  word-break: break-word; border: 1px solid transparent;
+}
+.msg.user { align-self: flex-end; background: var(--accent-dim); border-color: var(--accent-glow); max-width: 80%; }
+.msg.agent { align-self: flex-start; background: var(--surface-2); border-color: var(--hairline); color: var(--text-secondary); }
+.msg.agent h3 { font-family: var(--font-display); font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--text-primary); }
+.msg.agent em { color: var(--text-primary); }
+.msg.agent blockquote { border-left: 2px solid var(--accent); margin: 6px 0; padding: 2px 10px; color: var(--text-muted); font-size: 12px; }
+.msg.agent code { font-family: var(--font-mono); font-size: 12px; color: var(--accent); background: var(--surface-3); padding: 1px 4px; border-radius: 3px; }
+.msg .ts { display: block; margin-top: 3px; font-size: 10px; font-family: var(--font-mono); color: var(--text-muted); }
+
+.msg .plan-actions { margin-top: 10px; display: flex; gap: 8px; }
+.msg .plan-actions button {
+  height: 28px; padding: 0 12px; border-radius: var(--radius-sm);
+  font-family: var(--font-body); font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: all 150ms var(--ease);
+}
+.msg .plan-actions .btn-approve { background: var(--accent); border: 1px solid var(--accent); color: #fff; }
+.msg .plan-actions .btn-approve:hover { background: #6F7AE0; }
+.msg .plan-actions .btn-modify { background: var(--surface-3); border: 1px solid var(--hairline); color: var(--text-secondary); }
+.msg .plan-actions .btn-modify:hover { color: var(--text-primary); }
+
+.quick-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.quick-suggestions button {
+  height: 26px; padding: 0 10px; border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); background: var(--surface-2);
+  color: var(--text-secondary); font-family: var(--font-body);
+  font-size: 11px; cursor: pointer; transition: all 150ms var(--ease);
+}
+.quick-suggestions button:hover { border-color: var(--accent); color: var(--text-primary); background: var(--accent-dim); }
+
+#chat-bar {
+  padding: 8px 16px; border-top: 1px solid var(--hairline); display: flex; gap: 8px; align-items: center;
+}
+#chat-bar input {
+  flex: 1; height: 34px; padding: 0 12px;
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text-primary);
+  font-family: var(--font-body); font-size: 13px; outline: none;
+  transition: border-color 150ms var(--ease);
+}
+#chat-bar input:focus { border-color: var(--accent); background: var(--surface-3); }
+#chat-bar input::placeholder { color: var(--text-muted); }
+#chat-bar .marker-badge {
+  font-size: 10px; font-family: var(--font-mono); color: var(--marker-color);
+  background: var(--marker-dim); padding: 2px 6px; border-radius: 3px;
+  white-space: nowrap; display: none;
+}
+#chat-bar .marker-badge.visible { display: inline-block; }
+#chat-bar button {
+  height: 34px; padding: 0 16px; border: 1px solid var(--accent);
+  border-radius: var(--radius-sm); background: var(--accent); color: #fff;
+  font-family: var(--font-body); font-size: 13px; font-weight: 500;
+  cursor: pointer; transition: all 150ms var(--ease);
+}
+#chat-bar button:hover { background: #6F7AE0; }
+
+/* ── Overlays ── */
+.overlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(8,9,10,0.85); backdrop-filter: blur(4px);
+  z-index: 100; flex-direction: column; gap: 12px;
+}
+.overlay.hidden { display: none; }
+.overlay span { font-family: var(--font-display); font-size: 15px; font-weight: 500; color: var(--text-muted); }
+.overlay .progress { width: 160px; height: 2px; background: var(--surface-3); border-radius: 2px; overflow: hidden; }
+.overlay .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 30%; animation: progress 2s var(--ease) infinite; }
+@keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
+
+/* Settings Modal */
+.settings-content {
+  background: var(--surface-1); border: 1px solid var(--hairline);
+  border-radius: var(--radius-md); padding: 24px; width: 420px; max-width: 90vw;
+  max-height: 80vh; overflow-y: auto;
+}
+.settings-content h2 { font-family: var(--font-display); font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+.settings-content label { display: block; margin-bottom: 12px; }
+.settings-content label span { font-size: 12px; color: var(--text-muted); }
+.settings-content select, .settings-content input {
+  width: 100%; margin-top: 4px; height: 34px; padding: 0 8px;
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text-primary); font-size: 13px;
+}
+.settings-content select:focus, .settings-content input:focus { border-color: var(--accent); outline: none; }
+
+/* Marker tooltip */
+.marker-tooltip {
+  position: absolute; background: var(--surface-3); border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm); padding: 6px 10px; font-size: 12px;
+  color: var(--text-primary); pointer-events: none; z-index: 30;
+  white-space: nowrap; display: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+/* Progress bar */
+.progress-bar-container {
+  width: 200px; height: 6px; background: var(--surface-3);
+  border-radius: 3px; overflow: hidden; margin-top: 8px;
+}
+.progress-bar-fill {
+  height: 100%; background: var(--accent); border-radius: 3px;
+  width: 0%; transition: width 200ms var(--ease);
+}
+.progress-text {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-muted); margin-top: 4px; display: block; text-align: center;
+}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">ConvEdit</span>
+  <span class="sep"></span>
+  <button onclick="document.getElementById('file-input').click()">📂 加载 <span class="kbd">⌘O</span></button>
+  <button onclick="document.getElementById('ref-input').click()">📺 参考</button>
+  <button id="btn-save" onclick="saveProject()">💾 保存</button>
+  <button id="btn-load" onclick="showSessions()">📋 打开</button>
+  <button id="btn-render" class="primary" onclick="renderDirect()">🎬 渲染 <span class="kbd">⌘R</span></button>
+  <button id="btn-cancel-render" onclick="cancelRender()" style="display:none;background:#EF4444;border-color:#EF4444">⏹ 取消</button>
+  <button id="btn-undo" onclick="sendCmd('撤销')" class="icon-btn" title="撤销">↩</button>
+  <span class="spacer"></span>
+  <select id="export-preset" onchange="" style="height:28px;padding:0 6px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text-secondary);font-size:12px;margin-right:4px">
+    <option value="">导出...</option>
+    <option value="original">原始比例</option>
+    <option value="bilibili">B站 16:9</option>
+    <option value="douyin">抖音 9:16</option>
+    <option value="square">方形 1:1</option>
+  </select>
+  <button onclick="doExport()" style="height:28px;padding:0 10px">⬇ 导出</button>
+  <span class="status" id="status">未加载</span>
+  <span class="status" id="render-status" style="display:none"></span>
+  <button onclick="toggleSettings()" class="icon-btn" title="设置">⚙</button>
+</header>
+
+<main>
+  <!-- ═══ Preview Stage ═══ -->
+  <section id="preview-stage">
+    <div id="player-viewport">
+      <span id="player-placeholder">拖入视频文件或点击「加载」开始</span>
+      <video id="video-player" style="display:none"></video>
+      <canvas id="marker-overlay"></canvas>
+    </div>
+
+    <div id="player-bar">
+      <button id="btn-play" onclick="togglePlay()">▶</button>
+      <button id="btn-marker" onclick="addMarkerAtCurrent()" title="添加标记 (M 键)">📍</button>
+      <input type="range" id="seek-bar" min="0" max="1000" value="0" oninput="seekTo(this.value/1000)">
+      <span class="time-display" id="time-display">00:00 / 00:00</span>
+      <span class="marker-hint" id="marker-hint">按 M 添加标记</span>
+    </div>
+
+    <div id="timeline-strip">
+      <canvas id="tl-strip-canvas"></canvas>
+    </div>
+  </section>
+
+  <!-- ═══ Chat Panel ═══ -->
+  <div id="chat-panel" class="expanded">
+    <div id="chat-log"><div class="msg agent"><em>加载视频后，在预览台播放并标记关键点，然后告诉我你想做什么</em><span class="ts"></span></div></div>
+    <div id="chat-bar">
+      <span class="marker-badge" id="marker-badge">📍 0个标记</span>
+      <input type="text" id="chat-input" placeholder="描述你想要的剪辑效果，或直接说「高光合集」…" onkeydown="if(event.key==='Enter')sendChat()">
+      <button onclick="sendChat()">发送</button>
+    </div>
+  </div>
+  <button id="chat-toggle" onclick="toggleChat()">💬 聊天 <span class="count" id="msg-count"></span></button>
+</main>
+
+<input type="file" id="file-input" accept="video/*,image/*" style="display:none">
+<input type="file" id="ref-input" accept="video/*" style="display:none">
+
+<!-- Loading overlay -->
+<div class="overlay hidden" id="overlay">
+  <span id="overlay-text">处理中…</span>
+  <div class="progress"><div class="progress-fill"></div></div>
+<div class="progress-bar-container" id="progress-container" style="display:none">
+  <div class="progress-bar-fill" id="progress-fill"></div>
+  <span class="progress-text" id="progress-text">0%</span>
+</div>
+</div>
+
+<!-- Settings Modal -->
+<div class="overlay hidden" id="settings-modal" onclick="if(event.target===this)toggleSettings()">
+<div class="settings-content" onclick="event.stopPropagation()">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h2>LLM 配置</h2>
+    <button onclick="toggleSettings()" style="border:none;background:none;color:var(--text-muted);font-size:18px;cursor:pointer">&times;</button>
+  </div>
+  <label><span>Provider</span>
+    <select id="cfg-provider" onchange="onProviderChange()">
+      <option value="ollama">Ollama (本地)</option>
+      <option value="openai">OpenAI Compatible</option>
+    </select>
+  </label>
+  <div id="cfg-ollama">
+    <label><span>Ollama URL</span><input id="cfg-ollama-url" placeholder="http://192.168.0.104:11434" onchange="onEndpointChange()"></label>
+    <label><span>Model</span><select id="cfg-ollama-model"><option value="">点击刷新获取</option></select></label>
+    <button onclick="refreshModels()" style="height:28px;padding:0 12px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text-secondary);font-size:12px;cursor:pointer">🔄 刷新</button>
+  </div>
+  <div id="cfg-openai" style="display:none">
+    <label><span>API URL</span><input id="cfg-openai-url" placeholder="https://api.siliconflow.cn/v1"></label>
+    <label><span>API Key</span><input id="cfg-openai-key" type="password" placeholder="sk-..."></label>
+    <label><span>Model</span><select id="cfg-openai-model"><option value="">点击刷新获取</option></select></label>
+    <button onclick="refreshModels()" style="height:28px;padding:0 12px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text-secondary);font-size:12px;cursor:pointer">🔄 刷新</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-top:16px">
+    <button onclick="saveConfig()" class="primary" style="flex:1;height:34px;border:none;border-radius:var(--radius-sm);background:var(--accent);color:#fff;font-size:13px;font-weight:500;cursor:pointer">保存</button>
+    <button onclick="testConfig()" style="height:34px;padding:0 16px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text-secondary);font-size:13px;cursor:pointer">测试连接</button>
+  </div>
+  <hr style="border:none;border-top:1px solid var(--hairline);margin:16px 0">
+  <h3 style="font-family:var(--font-display);font-size:14px;font-weight:600;margin-bottom:12px">👁 视觉模型（风格分析用）</h3>
+  <label><span>Provider</span>
+    <select id="cfg-vision-provider" onchange="onVisionProviderChange()">
+      <option value="ollama">Ollama (本地)</option>
+      <option value="openai">OpenAI Compatible</option>
+    </select>
+  </label>
+  <div id="cfg-vision-ollama">
+    <label><span>Ollama URL</span><input id="cfg-vision-ollama-url" placeholder="http://192.168.0.104:11434" onchange="onVisionEndpointChange()"></label>
+    <label><span>Model</span><select id="cfg-vision-ollama-model"><option value="">点击刷新获取</option></select></label>
+    <button onclick="refreshVisionModels()" style="height:28px;padding:0 12px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text-secondary);font-size:12px;cursor:pointer">🔄 刷新</button>
+  </div>
+  <div id="cfg-vision-openai" style="display:none">
+    <label><span>API URL</span><input id="cfg-vision-openai-url" placeholder="https://api.siliconflow.cn/v1"></label>
+    <label><span>API Key</span><input id="cfg-vision-openai-key" type="password" placeholder="sk-..."></label>
+    <label><span>Model</span><select id="cfg-vision-openai-model"><option value="">点击刷新获取</option></select></label>
+    <button onclick="refreshVisionModels()" style="height:28px;padding:0 12px;border:1px solid var(--hairline);border-radius:var(--radius-sm);background:var(--surface-2);color:var(--text-secondary);font-size:12px;cursor:pointer">🔄 刷新</button>
+  </div>
+  <div id="cfg-status" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+let sessionId = null, ws = null;
+let timeline = [];
+let markers = [];            // [{id, time, label}]
+let proposedClips = [];      // [{start, end, label, speed}] from AI plan
+let rhythmFingerprint = ""; // "L M M S S..." from reference video
+let videoDuration = 0;
+let thumbnails = [];         // [{time, path}]
+let msgCount = 0;
+
+const player = document.getElementById('video-player');
+const placeholder = document.getElementById('player-placeholder');
+const seekBar = document.getElementById('seek-bar');
+const timeDisplay = document.getElementById('time-display');
+const markerBadge = document.getElementById('marker-badge');
+const markerHint = document.getElementById('marker-hint');
+const chatPanel = document.getElementById('chat-panel');
+const chatToggle = document.getElementById('chat-toggle');
+const msgCountEl = document.getElementById('msg-count');
+
+// ═══════════════════════════════════════════
+// PLAYER
+// ═══════════════════════════════════════════
+function togglePlay() {
+  if (!player.src) return;
+  if (player.paused) { player.play(); document.getElementById('btn-play').textContent = '⏸'; }
+  else { player.pause(); document.getElementById('btn-play').textContent = '▶'; }
+}
+
+player.addEventListener('timeupdate', () => {
+  if (!videoDuration) return;
+  const pct = player.currentTime / videoDuration;
+  seekBar.value = Math.floor(pct * 1000);
+  timeDisplay.textContent = `${fmtTime(player.currentTime)} / ${fmtTime(videoDuration)}`;
+  drawTimelineStrip();
+});
+
+player.addEventListener('play', () => { document.getElementById('btn-play').textContent = '⏸'; });
+player.addEventListener('pause', () => { document.getElementById('btn-play').textContent = '▶'; });
+player.addEventListener('ended', () => { document.getElementById('btn-play').textContent = '▶'; });
+
+function seekTo(pct) {
+  if (!videoDuration) return;
+  player.currentTime = pct * videoDuration;
+}
+
+// ═══════════════════════════════════════════
+// MARKERS
+// ═══════════════════════════════════════════
+function addMarkerAtCurrent() {
+  if (!videoDuration) return;
+  const t = player.currentTime;
+  // Prevent duplicates within 0.5s
+  if (markers.some(m => Math.abs(m.time - t) < 0.5)) return;
+  markers.push({ id: 'm' + Date.now(), time: t, label: '' });
+  markers.sort((a, b) => a.time - b.time);
+  updateMarkerUI();
+  flashMarkerHint();
+}
+
+function removeMarker(id) {
+  markers = markers.filter(m => m.id !== id);
+  updateMarkerUI();
+}
+
+function removeNearestMarker(time) {
+  if (!markers.length) return;
+  let nearest = markers[0];
+  let minDist = Math.abs(nearest.time - time);
+  for (const m of markers) {
+    const d = Math.abs(m.time - time);
+    if (d < minDist) { minDist = d; nearest = m; }
+  }
+  if (minDist < 1.5) removeMarker(nearest.id);
+}
+
+function updateMarkerUI() {
+  const n = markers.length;
+  markerBadge.textContent = `📍 ${n}个标记`;
+  markerBadge.classList.toggle('visible', n > 0);
+  drawTimelineStrip();
+  syncMarkers();
+}
+
+function syncMarkers() {
+  // Send markers to backend for context persistence
+  if (sessionId) {
+    fetch(`/api/markers/${sessionId}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({markers}),
+    }).catch(() => {});
+  }
+}
+
+function flashMarkerHint() {
+  markerHint.classList.add('visible');
+  setTimeout(() => markerHint.classList.remove('visible'), 2000);
+}
+
+function getMarkersContext() {
+  if (!markers.length) return '';
+  return markers.map(m => `@${m.time.toFixed(1)}s${m.label ? ' ' + m.label : ''}`).join(' | ');
+}
+
+// ═══════════════════════════════════════════
+// TIMELINE STRIP (Canvas)
+// ═══════════════════════════════════════════
+function drawTimelineStrip() {
+  const cv = document.getElementById('tl-strip-canvas');
+  const rect = cv.parentElement.getBoundingClientRect();
+  const W = rect.width, H = rect.height;
+  if (W <= 0 || H <= 0) return;
+  cv.width = W * 2; cv.height = H * 2;
+  const ctx = cv.getContext('2d');
+  ctx.scale(2, 2);
+
+  ctx.fillStyle = '#16171C';
+  ctx.fillRect(0, 0, W, H);
+
+  if (!videoDuration || !thumbnails.length) {
+    ctx.fillStyle = '#6B7280';
+    ctx.font = '11px "Inter", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('加载视频后显示时间轴', W / 2, H / 2 + 4);
+    return;
+  }
+
+  // Draw thumbnail strip
+  const thumbH = H - 20;
+  thumbnails.forEach((tn, i) => {
+    const x = (i / thumbnails.length) * W;
+    const w = W / thumbnails.length;
+    try {
+      const img = new Image();
+      img.src = tn.path;
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(img, x, 2, w, thumbH);
+      }
+    } catch (e) {}
+  });
+
+  // Draw time grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 10; i++) {
+    const x = (i / 10) * W;
+    ctx.beginPath(); ctx.moveTo(x, 2); ctx.lineTo(x, H - 2); ctx.stroke();
+  }
+
+  // Draw markers
+  markers.forEach(m => {
+    const x = (m.time / videoDuration) * W;
+    ctx.fillStyle = '#F59E0B';
+    ctx.beginPath();
+    ctx.moveTo(x, H - 4);
+    ctx.lineTo(x - 5, H - 16);
+    ctx.lineTo(x + 5, H - 16);
+    ctx.closePath();
+    ctx.fill();
+
+    if (m.label) {
+      ctx.fillStyle = '#F7F8F8';
+      ctx.font = '10px "Inter", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(m.label, x, H - 18);
+    }
+  });
+
+  // Draw proposed clips (AI suggestion — colored blocks with labels)
+  if (proposedClips.length && videoDuration) {
+    proposedClips.forEach((c, i) => {
+      const x = (c.start / videoDuration) * W;
+      const dur = (c.end - c.start) / (c.speed || 1);
+      const w = Math.max((dur / videoDuration) * W, 6);
+      // Filled block with accent color
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.35)';
+      ctx.fillRect(x, 6, w - 2, H - 16);
+      // Dashed border
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.65)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeRect(x, 6, w - 2, H - 16);
+      ctx.setLineDash([]);
+      // Label
+      if (w > 30) {
+        ctx.fillStyle = '#F7F8F8';
+        ctx.font = '10px "Inter", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(c.label || `#${i+1}`, x + w/2, H/2 + 3);
+      }
+    });
+  }
+
+  // Draw confirmed timeline clips
+  let cumTime = 0;
+  timeline.filter(i => i.type === 'clip').forEach(item => {
+    const d = item.data;
+    const dur = (d.source_end - d.source_start) / (d.speed || 1);
+    const x = (cumTime / videoDuration) * W;
+    const w = Math.max((dur / videoDuration) * W, 3);
+    ctx.fillStyle = 'rgba(94, 106, 210, 0.4)';
+    ctx.fillRect(x, H - 5, w, 3);
+    cumTime += dur;
+  });
+
+  // Draw rhythm fingerprint bar (from reference video)
+  if (rhythmFingerprint && videoDuration) {
+    const tokens = rhythmFingerprint.split(/\s+/).filter(t => t !== 'T');
+    if (tokens.length) {
+      const segW = W / tokens.length;
+      tokens.forEach((t, i) => {
+        const colors = { L: '#10B981', M: '#F59E0B', S: '#EF4444' };
+        ctx.fillStyle = colors[t] || 'rgba(255,255,255,0.1)';
+        ctx.fillRect(i * segW, 0, segW - 1, 3);
+      });
+      // Label
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.font = '8px "Inter", sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`节奏指纹: ${rhythmFingerprint.substring(0,30)}`, 4, 8);
+    }
+  }
+
+  // Draw playhead
+  if (player.currentTime !== undefined) {
+    const px = (player.currentTime / videoDuration) * W;
+    ctx.strokeStyle = '#F7F8F8';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke();
+  }
+}
+
+// Click on timeline strip: seek + add marker with Shift
+document.getElementById('timeline-strip').addEventListener('click', e => {
+  if (!videoDuration) return;
+  const rect = e.target.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  const t = pct * videoDuration;
+
+  if (e.shiftKey) {
+    markers.push({ id: 'm' + Date.now(), time: t, label: '' });
+    markers.sort((a, b) => a.time - b.time);
+    updateMarkerUI();
+  } else {
+    player.currentTime = t;
+  }
+});
+
+// Right-click on timeline: remove nearest marker
+document.getElementById('timeline-strip').addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (!videoDuration) return;
+  const rect = e.target.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  const t = pct * videoDuration;
+  removeNearestMarker(t);
+});
+
+// ═══════════════════════════════════════════
+// KEYBOARD SHORTCUTS
+// ═══════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  // ⌘O / Ctrl+O: open file
+  if ((e.metaKey || e.ctrlKey) && e.key === 'o') { e.preventDefault(); document.getElementById('file-input').click(); }
+  // ⌘R / Ctrl+R: render
+  if ((e.metaKey || e.ctrlKey) && e.key === 'r') { e.preventDefault(); sendCmd('渲染预览'); }
+  // Space: toggle play (when not in input)
+  if (e.key === ' ' && document.activeElement !== document.getElementById('chat-input')) {
+    e.preventDefault(); togglePlay();
+  }
+  // M: add marker (when not in input)
+  if (e.key === 'm' && document.activeElement !== document.getElementById('chat-input')) {
+    e.preventDefault(); addMarkerAtCurrent();
+  }
+  // Left/Right arrow: seek ±5s
+  if (e.key === 'ArrowLeft' && document.activeElement !== document.getElementById('chat-input')) {
+    e.preventDefault(); player.currentTime = Math.max(0, player.currentTime - 5);
+  }
+  if (e.key === 'ArrowRight' && document.activeElement !== document.getElementById('chat-input')) {
+    e.preventDefault(); player.currentTime = Math.min(videoDuration, player.currentTime + 5);
+  }
+});
+
+// ═══════════════════════════════════════════
+// CHAT
+// ═══════════════════════════════════════════
+function toggleChat() {
+  const isExpanded = chatPanel.classList.contains('expanded');
+  chatPanel.classList.toggle('expanded', !isExpanded);
+  chatPanel.classList.toggle('collapsed', isExpanded);
+  chatToggle.textContent = isExpanded ? '💬 展开聊天' : '💬 收起聊天';
+}
+
+function sendChat(text) {
+  const input = document.getElementById('chat-input');
+  const cmd = text || input.value.trim();
+  if (!cmd) return;
+
+  // Build context with markers
+  const markerCtx = getMarkersContext();
+  const fullCmd = markerCtx ? `${cmd}\n[标记: ${markerCtx}]` : cmd;
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    showOverlay('处理中…');
+    ws.send(JSON.stringify({ text: fullCmd }));
+    if (!text) input.value = '';
+    setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) hideOverlay(); }, 3000);
+  } else {
+    addMsg('agent', '未连接服务器，请先加载视频');
+  }
+}
+
+// Send command without marker context (for undo/save/render buttons)
+function sendCmd(cmd) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    showOverlay('处理中…');
+    ws.send(JSON.stringify({ text: cmd }));
+    setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) hideOverlay(); }, 3000);
+  } else {
+    addMsg('agent', '未连接服务器');
+  }
+}
+
+function addMsg(role, html) {
+  const el = document.createElement('div');
+  el.className = `msg ${role}`;
+  el.innerHTML = html;
+  const ts = document.createElement('span');
+  ts.className = 'ts'; ts.textContent = new Date().toLocaleTimeString();
+  el.appendChild(ts);
+  const log = document.getElementById('chat-log');
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  msgCount++;
+  updateMsgCount();
+  // Auto-expand chat on new message
+  if (chatPanel.classList.contains('collapsed')) toggleChat();
+  return el;
+}
+
+function updateMsgCount() {
+  msgCountEl.textContent = msgCount > 0 ? `(${msgCount})` : '';
+}
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+// ═══════════════════════════════════════════
+// FILE LOAD
+// ═══════════════════════════════════════════
+document.getElementById('file-input').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  showOverlay('分析视频中…');
+  try {
+    const resp = await fetch('/api/load-video', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filepath: f.path || `/tmp/${f.name}` }),
+    });
+    const d = await resp.json();
+    if (d.success) {
+      sessionId = d.session_id;
+      videoDuration = d.duration;
+      markers = [];
+      timeline = [];
+      proposedClips = [];
+      document.getElementById('status').textContent = `${d.filename} · ${d.duration.toFixed(0)}s`;
+      timeDisplay.textContent = `00:00 / ${fmtTime(d.duration)}`;
+      seekBar.max = 1000; seekBar.value = 0;
+      connect();
+
+      // Load thumbnails
+      loadThumbnails(d.session_id);
+
+      // Show quick suggestions
+      if (d.analysis) {
+        addMsg('agent', `<h3>视频分析完成</h3>
+<p>时长 ${d.duration.toFixed(0)}s · 检测到 ${d.analysis.scenes_count} 个场景</p>
+<p>试试这些方向，或在预览台打标记后告诉我：</p>
+<div class="quick-suggestions" id="suggestions">
+  <button>高光合集</button><button>慢放精彩时刻</button>
+  <button>快节奏卡点</button><button>搞笑片段</button>
+  <button>完整精剪</button><button>文艺慢剪</button>
+</div>`);
+        document.querySelectorAll('#suggestions button').forEach(btn => {
+          btn.onclick = () => sendChat(btn.textContent);
+        });
+      }
+    } else {
+      document.getElementById('overlay-text').textContent = '加载失败';
+    }
+  } catch (err) {
+    document.getElementById('overlay-text').textContent = '服务器连接失败';
+  }
+});
+
+async function loadThumbnails(sid) {
+  try {
+    const r = await fetch(`/api/thumbnails/${sid}?count=12`);
+    const d = await r.json();
+    thumbnails = d.paths.map((p, i) => ({ time: (i + 1) * videoDuration / (d.paths.length + 1), path: p }));
+    drawTimelineStrip();
+  } catch (e) {}
+}
+
+// ═══════════════════════════════════════════
+// WEBSOCKET
+// ═══════════════════════════════════════════
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/${sessionId}`);
+  ws.onopen = () => {
+    hideOverlay();
+    document.getElementById('chat-input').focus();
+    updateMarkerUI();
+  };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    switch (m.type) {
+      case 'session_ready': break;
+      case 'user_message': addMsg('user', m.text); break;
+      case 'edit_result':
+        const r = m.result;
+        let html = r.message || (r.success ? '✓' : '✗');
+        if (r.plan) {
+          // Populate proposed clips on timeline
+          proposedClips = r.plan.clips || [];
+          html = r.display || formatPlan(r.plan);
+          html += `<div class="plan-actions">
+            <button class="btn-approve" onclick="sendCmd('执行方案')">✅ 执行</button>
+            <button class="btn-modify" onclick="document.getElementById('chat-input').focus()">✏️ 修改</button>
+          </div>`;
+        }
+        // Clear proposals when plan executed
+        if (r.action === 'execute_plan' || r.message?.includes('已按方案添加')) {
+          proposedClips = [];
+        }
+        addMsg('agent', html);
+        if (r.timeline) { timeline = r.timeline; }
+        drawTimelineStrip();
+        break;
+      case 'preview_ready':
+        addMsg('agent', '📼 预览已就绪，在预览台播放查看效果');
+        placeholder.style.display = 'none';
+        player.style.display = 'block';
+        player.src = m.path + '?t=' + Date.now();
+        // Re-probe duration for rendered preview
+        player.onloadedmetadata = () => {
+          videoDuration = player.duration;
+          timeDisplay.textContent = `00:00 / ${fmtTime(videoDuration)}`;
+        };
+        break;
+      case 'error': addMsg('agent', '⚠️ ' + m.message); break;
+    }
+  };
+  ws.onclose = () => { document.getElementById('overlay-text').textContent = '连接断开'; showOverlay(''); };
+  ws.onerror = () => { document.getElementById('overlay-text').textContent = '连接错误'; showOverlay(''); };
+}
+
+function formatPlan(p) {
+  let h = `<h3>${p.title}</h3><p><em>${p.vibe} · ${p.target_duration}</em></p>`;
+  if (p.structure && p.structure.length) {
+    h += '<p>' + p.structure.map(s => `<code>${s}</code>`).join(' → ') + '</p>';
+  }
+  h += '<blockquote>' + (p.reasoning || '') + '</blockquote>';
+  let total = 0;
+  (p.clips || []).forEach((c, i) => {
+    const dur = (c.end - c.start) / (c.speed || 1);
+    total += dur;
+    h += `<p>${i + 1}. <strong>${c.label}</strong> ${c.start.toFixed(0)}s→${c.end.toFixed(0)}s (${dur.toFixed(0)}s${c.speed !== 1 ? ' @' + c.speed + 'x' : ''})</p>`;
+  });
+  h += `<p><strong>~${total.toFixed(0)}s</strong></p>`;
+  return h;
+}
+
+// ═══════════════════════════════════════════
+// RENDER DIRECT + PROGRESS
+// ═══════════════════════════════════════════
+async function renderDirect() {
+  if (!sessionId) return;
+  if (!timeline.length) { addMsg('agent', '⚠️ 时间轴为空，请先添加片段'); return; }
+
+  const btnRender = document.getElementById('btn-render');
+  const btnCancel = document.getElementById('btn-cancel-render');
+  const progContainer = document.getElementById('progress-container');
+  const progFill = document.getElementById('progress-fill');
+  const progText = document.getElementById('progress-text');
+  const statusEl = document.getElementById('render-status');
+
+  btnRender.style.display = 'none';
+  btnCancel.style.display = '';
+  progContainer.style.display = '';
+  statusEl.style.display = '';
+  statusEl.textContent = '渲染中...';
+
+  try {
+    await fetch(`/api/render/${sessionId}`, { method: 'POST' });
+  } catch(e) { addMsg('agent', '⚠️ 渲染启动失败'); resetRenderUI(); return; }
+
+  // Poll status
+  let pollTimer = setInterval(async () => {
+    try {
+      const r = await fetch(`/api/render/status/${sessionId}`);
+      const d = await r.json();
+      progFill.style.width = d.progress + '%';
+      progText.textContent = Math.round(d.progress) + '%';
+      statusEl.textContent = '渲染中 ' + Math.round(d.progress) + '%';
+
+      if (d.state === 'done') {
+        clearInterval(pollTimer);
+        statusEl.textContent = '✅ 完成';
+        resetRenderUI();
+        // Load preview
+        placeholder.style.display = 'none';
+        player.style.display = 'block';
+        player.src = d.preview_url + '?t=' + Date.now();
+        player.onloadedmetadata = () => {
+          videoDuration = player.duration;
+          timeDisplay.textContent = `00:00 / ${fmtTime(videoDuration)}`;
+        };
+        addMsg('agent', '📼 渲染完成，预览台已加载');
+      } else if (d.state === 'error') {
+        clearInterval(pollTimer);
+        statusEl.textContent = '❌ 失败';
+        resetRenderUI();
+        addMsg('agent', '⚠️ 渲染失败');
+      }
+    } catch(e) {}
+  }, 500);
+
+  // Store for cancel
+  window._pollTimer = pollTimer;
+}
+
+function cancelRender() {
+  if (sessionId) fetch(`/api/render/cancel/${sessionId}`, { method: 'POST' }).catch(()=>{});
+  if (window._pollTimer) clearInterval(window._pollTimer);
+  resetRenderUI();
+  addMsg('agent', '⏹ 渲染已取消');
+}
+
+function resetRenderUI() {
+  document.getElementById('btn-render').style.display = '';
+  document.getElementById('btn-cancel-render').style.display = 'none';
+  document.getElementById('progress-container').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════
+// EXPORT
+// ═══════════════════════════════════════════
+function doExport() {
+  const preset = document.getElementById('export-preset').value;
+  if (!preset) { addMsg('agent', '⚠️ 请选择导出格式'); return; }
+  if (!sessionId || !timeline.length) { addMsg('agent', '⚠️ 时间轴为空'); return; }
+
+  window.open(`/api/export/${sessionId}?preset=${preset}`, '_blank');
+  addMsg('agent', `📥 正在导出 ${preset} 格式...`);
+}
+
+// ═══════════════════════════════════════════
+// REFERENCE VIDEO
+// ═══════════════════════════════════════════
+document.getElementById('ref-input').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  showOverlay('分析参考视频风格...');
+  try {
+    const resp = await fetch('/api/analyze-reference', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({filepath: f.path || `/tmp/${f.name}`, use_vision: true}),
+    });
+    const d = await resp.json();
+    if (d.success) {
+      addMsg('agent', `<h3>📺 参考视频风格分析</h3><pre style=\"font-size:12px;color:var(--text-secondary);white-space:pre-wrap\">${d.summary}${d.style_description ? '\\n\\n🎨 视觉分析:\\n' + d.style_description : ''}</pre>
+<div class=\"plan-actions\"><button class=\"btn-approve\" onclick=\"replicateStyle('${f.path || '/tmp/' + f.name}')\">🎯 用此风格复刻</button></div>`);
+    } else {
+      addMsg('agent', '⚠️ 分析失败');
+    }
+  } catch(err) { addMsg('agent', '⚠️ 分析出错'); }
+  hideOverlay();
+});
+
+async function replicateStyle(refPath) {
+  if (!sessionId) { addMsg('agent', '⚠️ 请先加载源视频'); return; }
+  showOverlay('复刻风格中...');
+  try {
+    const r = await fetch('/api/replicate-style', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reference_path: refPath, session_id: sessionId}),
+    });
+    const d = await r.json();
+    if (d.success && d.proposed_clips) {
+      proposedClips = d.proposed_clips;
+      rhythmFingerprint = d.rhythm || '';
+      drawTimelineStrip();
+      addMsg('agent', `<h3>🎯 风格复刻完成</h3><p>${d.summary}</p><p>已生成 ${d.clip_count} 个建议片段，时间轴已更新</p>
+<p>节奏模式: <code>${d.rhythm||''}</code></p>`);
+    }
+  } catch(e) { addMsg('agent', '⚠️ 复刻失败'); }
+  hideOverlay();
+}
+
+// ═══════════════════════════════════════════
+// PROJECT SAVE / LOAD
+// ═══════════════════════════════════════════
+function saveProject() {
+  if (!sessionId) return;
+  addMsg('agent', '💾 项目已自动保存');
+}
+
+async function showSessions() {
+  try {
+    const r = await fetch('/api/sessions');
+    const d = await r.json();
+    if (!d.sessions.length) { addMsg('agent', '📋 没有已保存的项目'); return; }
+    let html = '<h3>📋 最近项目</h3>';
+    d.sessions.forEach((s, i) => {
+      html += `<p style="cursor:pointer;padding:4px 0;border-bottom:1px solid var(--hairline)" onclick="location.href='/?session=${s.id}'">
+        ${i+1}. ${s.filename} · ${s.clips}片段 · ${s.markers}标记
+      </p>`;
+    });
+    addMsg('agent', html);
+  } catch(e) { addMsg('agent', '⚠️ 加载失败'); }
+}
+
+// ═══════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const c = await r.json();
+    document.getElementById('cfg-provider').value = c.provider || 'ollama';
+    document.getElementById('cfg-ollama-url').value = c.ollama_url || '';
+    document.getElementById('cfg-openai-url').value = c.openai_url || '';
+    onProviderChange();
+    // Vision
+    document.getElementById('cfg-vision-provider').value = c.vision_provider || 'ollama';
+    document.getElementById('cfg-vision-ollama-url').value = c.vision_ollama_url || '';
+    document.getElementById('cfg-vision-openai-url').value = c.vision_openai_url || '';
+    onVisionProviderChange();
+    document.getElementById('cfg-status').textContent = '状态: ' + (c.available || '?');
+    refreshModels();
+    refreshVisionModels();
+  } catch (e) { document.getElementById('cfg-status').textContent = '无法加载配置'; }
+}
+
+function onProviderChange() {
+  const p = document.getElementById('cfg-provider').value;
+  document.getElementById('cfg-ollama').style.display = p === 'ollama' ? '' : 'none';
+  document.getElementById('cfg-openai').style.display = p === 'openai' ? '' : 'none';
+}
+
+function onEndpointChange() {
+  saveConfigSilent().then(() => refreshModels());
+}
+
+async function saveConfigSilent() {
+  try { await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) }); } catch (e) {}
+}
+
+function collectConfig() {
+  return {
+    provider: document.getElementById('cfg-provider').value,
+    ollama_url: document.getElementById('cfg-ollama-url').value,
+    ollama_model: document.getElementById('cfg-ollama-model').value,
+    openai_url: document.getElementById('cfg-openai-url').value,
+    openai_key: document.getElementById('cfg-openai-key').value,
+    openai_model: document.getElementById('cfg-openai-model').value,
+    // Vision
+    vision_provider: document.getElementById('cfg-vision-provider').value,
+    vision_ollama_url: document.getElementById('cfg-vision-ollama-url').value,
+    vision_ollama_model: document.getElementById('cfg-vision-ollama-model').value,
+    vision_openai_url: document.getElementById('cfg-vision-openai-url').value,
+    vision_openai_key: document.getElementById('cfg-vision-openai-key').value,
+    vision_openai_model: document.getElementById('cfg-vision-openai-model').value,
+  };
+}
+
+function onVisionProviderChange() {
+  const p = document.getElementById('cfg-vision-provider').value;
+  document.getElementById('cfg-vision-ollama').style.display = p === 'ollama' ? '' : 'none';
+  document.getElementById('cfg-vision-openai').style.display = p === 'openai' ? '' : 'none';
+}
+function onVisionEndpointChange() {
+  saveConfigSilent().then(() => refreshVisionModels());
+}
+async function refreshVisionModels() {
+  const provider = document.getElementById('cfg-vision-provider').value;
+  const selectId = provider === 'ollama' ? 'cfg-vision-ollama-model' : 'cfg-vision-openai-model';
+  const select = document.getElementById(selectId);
+  const current = select.value;
+  select.innerHTML = '<option value="">加载中…</option>';
+  try {
+    const r = await fetch('/api/vision-models');
+    const d = await r.json();
+    if (d.success && d.models.length) {
+      select.innerHTML = d.models.map(m => `<option value="${m}" ${m === current ? 'selected' : ''}>${m}</option>`).join('');
+      if (!current || !d.models.includes(current)) select.value = d.models[0];
+    } else {
+      select.innerHTML = `<option value="">${d.error || '无模型'}</option>`;
+    }
+  } catch (e) { select.innerHTML = '<option value="">获取失败</option>'; }
+}
+
+async function refreshModels() {
+  const provider = document.getElementById('cfg-provider').value;
+  const selectId = provider === 'ollama' ? 'cfg-ollama-model' : 'cfg-openai-model';
+  const select = document.getElementById(selectId);
+  const current = select.value;
+  select.innerHTML = '<option value="">加载中…</option>';
+  try {
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    if (d.success && d.models.length) {
+      select.innerHTML = d.models.map(m => `<option value="${m}" ${m === current ? 'selected' : ''}>${m}</option>`).join('');
+      if (!current || !d.models.includes(current)) select.value = d.models[0];
+    } else {
+      select.innerHTML = `<option value="">${d.error || '无模型'}</option>`;
+    }
+  } catch (e) { select.innerHTML = '<option value="">获取失败</option>'; }
+}
+
+async function saveConfig() {
+  try {
+    await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(collectConfig()) });
+    document.getElementById('cfg-status').textContent = '✅ 已保存';
+  } catch (e) { document.getElementById('cfg-status').textContent = '保存失败'; }
+}
+
+async function testConfig() {
+  document.getElementById('cfg-status').textContent = '测试中…';
+  try {
+    await saveConfigSilent();
+    const r = await fetch('/api/models');
+    const d = await r.json();
+    document.getElementById('cfg-status').textContent = d.success ? `✅ 连接成功 (${d.models.length} 模型)` : `❌ ${d.error}`;
+  } catch (e) { document.getElementById('cfg-status').textContent = '❌ 连接失败'; }
+}
+
+function toggleSettings() {
+  const m = document.getElementById('settings-modal');
+  if (m.classList.contains('hidden')) { m.classList.remove('hidden'); loadConfig(); }
+  else m.classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════
+// OVERLAY HELPERS
+// ═══════════════════════════════════════════
+const overlay = document.getElementById('overlay');
+const ovText = document.getElementById('overlay-text');
+function showOverlay(text) { overlay.classList.remove('hidden'); if (text) ovText.textContent = text; }
+function hideOverlay() { overlay.classList.add('hidden'); }
+
+// ═══════════════════════════════════════════
+// DRAG & DROP
+// ═══════════════════════════════════════════
+document.addEventListener('dragover', e => { e.preventDefault(); });
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    document.getElementById('file-input').files = dt.files;
+    document.getElementById('file-input').dispatchEvent(new Event('change'));
+  }
+});
+
+// Init timestamp in welcome message
+document.querySelector('#chat-log .ts').textContent = new Date().toLocaleTimeString();
+
+// Auto-connect if ?session= param provided
+(async function autoConnect() {
+  const params = new URLSearchParams(location.search);
+  const sid = params.get('session');
+  if (!sid) return;
+  try {
+    const r = await fetch(`/api/session/${sid}`);
+    const d = await r.json();
+    if (d.success) {
+      sessionId = sid;
+      videoDuration = d.duration;
+      document.getElementById('status').textContent = `${d.filename} · ${d.duration.toFixed(0)}s`;
+      timeDisplay.textContent = `00:00 / ${fmtTime(d.duration)}`;
+      // Show source video in player
+      placeholder.style.display = 'none';
+      player.style.display = 'block';
+      player.src = `/api/media/${sid}`;
+      connect();
+      loadThumbnails(sid);
+      addMsg('agent', `<em>已连接: ${d.filename} (${d.duration.toFixed(0)}s)</em>`);
+    }
+  } catch(e) { console.error('Auto-connect failed:', e); }
+})();
+</script>
+</body>
+</html>
