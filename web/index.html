@@ -225,6 +225,14 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .overlay .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; width: 30%; animation: progress 2s var(--ease) infinite; }
 @keyframes progress { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
 
+.pipeline-stages { font-size: 12px; font-family: "Inter", sans-serif; }
+.pipeline-stage { padding: 4px 0; color: var(--text-muted); display: flex; align-items: center; gap: 6px; }
+.pipeline-stage.active { color: var(--text-primary); }
+.pipeline-stage.done { color: #10B981; }
+.pipeline-stage.failed { color: #EF4444; }
+.pipeline-stage .stage-icon { font-size: 14px; width: 18px; }
+.pipeline-stage .stage-findings { font-size: 11px; color: var(--text-muted); margin-left: 24px; }
+
 /* Settings Modal */
 .settings-content {
   background: var(--surface-1); border: 1px solid var(--hairline);
@@ -336,6 +344,7 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
   <div class="progress-bar-fill" id="progress-fill"></div>
   <span class="progress-text" id="progress-text">0%</span>
 </div>
+<div class="pipeline-stages" id="pipeline-stages" style="display:none;text-align:left;margin-top:16px"></div>
 </div>
 
 <!-- Settings Modal -->
@@ -882,16 +891,22 @@ async function renderDirect() {
   const progFill = document.getElementById('progress-fill');
   const progText = document.getElementById('progress-text');
   const statusEl = document.getElementById('render-status');
+  const pipelineDiv = document.getElementById('pipeline-stages');
 
   btnRender.style.display = 'none';
   btnCancel.style.display = '';
   progContainer.style.display = '';
+  pipelineDiv.style.display = '';
   statusEl.style.display = '';
-  statusEl.textContent = '渲染中...';
+  statusEl.textContent = '管道启动中...';
+  pipelineDiv.innerHTML = '';
 
   try {
-    await fetch(`/api/render/${sessionId}`, { method: 'POST' });
+    await fetch(`/api/render/${sessionId}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({pipeline:'game-highlight'}) });
   } catch(e) { addMsg('agent', '⚠️ 渲染启动失败'); resetRenderUI(); return; }
+
+  let stageNames = [];
+  let completedStages = [];
 
   // Poll status
   let pollTimer = setInterval(async () => {
@@ -900,13 +915,22 @@ async function renderDirect() {
       const d = await r.json();
       progFill.style.width = d.progress + '%';
       progText.textContent = Math.round(d.progress) + '%';
-      statusEl.textContent = '渲染中 ' + Math.round(d.progress) + '%';
+      statusEl.textContent = d.current_stage ? `⏳ ${d.current_stage}` : '渲染中 ' + Math.round(d.progress) + '%';
+
+      // Show pipeline stages
+      if (d.last_stage_result) {
+        const sr = d.last_stage_result;
+        if (!completedStages.includes(sr.stage_name)) {
+          completedStages.push(sr.stage_name);
+          // Update stage list
+          updatePipelineUI(stageNames, completedStages, d.current_stage, sr);
+        }
+      }
 
       if (d.state === 'done') {
         clearInterval(pollTimer);
         statusEl.textContent = '✅ 完成';
         resetRenderUI();
-        // Load preview
         placeholder.style.display = 'none';
         player.style.display = 'block';
         player.src = d.preview_url + '?t=' + Date.now();
@@ -914,18 +938,47 @@ async function renderDirect() {
           videoDuration = player.duration;
           timeDisplay.textContent = `00:00 / ${fmtTime(videoDuration)}`;
         };
-        addMsg('agent', '📼 渲染完成，预览台已加载');
+        // Show all stages done
+        updatePipelineUI(stageNames, stageNames, '', null, true);
+        addMsg('agent', '📼 管道渲染完成，预览台已加载');
       } else if (d.state === 'error') {
         clearInterval(pollTimer);
         statusEl.textContent = '❌ 失败';
         resetRenderUI();
-        addMsg('agent', '⚠️ 渲染失败');
+        addMsg('agent', '⚠️ 管道渲染失败');
       }
     } catch(e) {}
   }, 500);
 
-  // Store for cancel
   window._pollTimer = pollTimer;
+
+  // Fetch pipeline definition to get stage names
+  fetch('/api/pipelines').then(r => r.json()).then(d => {
+    const pipe = d.pipelines.find(p => p.name === 'game-highlight');
+    if (pipe) stageNames = pipe.stages;
+  }).catch(()=>{});
+}
+
+function updatePipelineUI(allStages, completed, current, lastResult, allDone) {
+  const div = document.getElementById('pipeline-stages');
+  if (!allStages.length) return;
+  div.innerHTML = allStages.map(s => {
+    let icon = '○';
+    let cls = '';
+    if (allDone || completed.includes(s)) { icon = '✅'; cls = 'done'; }
+    else if (s === current) { icon = '◉'; cls = 'active'; }
+    else if (completed.length && !completed.includes(s) && s !== current) { icon = '⏳'; }
+
+    let findings = '';
+    if (lastResult && lastResult.stage_name === s && lastResult.findings && lastResult.findings.length) {
+      findings = lastResult.findings.map(f => {
+        const icons = {critical:'❌',suggestion:'⚠️',nitpick:'💡',investigation:'🔍'};
+        return `<div class="stage-findings">${icons[f.severity]||'•'} ${f.detail}</div>`;
+      }).join('');
+    }
+
+    return `<div class="pipeline-stage ${cls}"><span class="stage-icon">${icon}</span> ${s}${findings}</div>`;
+  }).join('');
 }
 
 function cancelRender() {
@@ -939,6 +992,7 @@ function resetRenderUI() {
   document.getElementById('btn-render').style.display = '';
   document.getElementById('btn-cancel-render').style.display = 'none';
   document.getElementById('progress-container').style.display = 'none';
+  document.getElementById('pipeline-stages').style.display = 'none';
 }
 
 // ═══════════════════════════════════════════

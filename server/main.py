@@ -2,6 +2,7 @@
 
 import json
 import os
+import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -15,6 +16,7 @@ from .model_fetch import fetch_models, fetch_vision_models
 from .planner import EditPlanner
 from .skills_manager import SkillManager
 from .reference_analyzer import ReferenceAnalyzer
+from engine.pipeline import PipelineEngine
 
 app = FastAPI(title="对话式视频剪辑工作台")
 
@@ -28,6 +30,7 @@ session_manager = SessionManager()
 nlu = NLUParser()
 skill_manager = SkillManager()  # 全局技能管理器，跨 session 共享
 ref_analyzer = ReferenceAnalyzer()
+pipeline_engine = PipelineEngine()  # 管道渲染引擎
 
 
 @app.get("/")
@@ -284,7 +287,7 @@ async def delete_skill(name: str):
 
 @app.post("/api/render/{session_id}")
 async def trigger_render(session_id: str, data: dict = None):
-    """触发异步渲染"""
+    """触发管道渲染 — 多阶段生产流水线"""
     session = session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session 不存在")
@@ -296,33 +299,46 @@ async def trigger_render(session_id: str, data: dict = None):
     session.render_state = "rendering"
     session.render_progress = 0
     session.render_cancelled = False
-
-    sources = {session.current_source_id: session.source_path}
-    output = session.renderer.media_dir / f"preview_{session.id}_{session.timeline.version}.mp4"
+    pipeline_name = (data or {}).get("pipeline", "game-highlight")
+    session.current_pipeline = pipeline_name
 
     import threading
 
-    def render_thread():
+    def pipeline_thread():
         try:
-            def on_progress(pct, msg):
-                session.render_progress = pct
-            session.renderer.render_with_progress(
-                session.timeline, sources, str(output),
-                preview=True,
-                on_progress=on_progress,
-                on_cancel_check=lambda: session.render_cancelled,
+            def on_stage_start(name, idx, total):
+                session.render_progress = (idx / max(total, 1)) * 90
+                session.current_stage = name
+
+            def on_stage_complete(result, idx, total):
+                pct = ((idx + 1) / max(total, 1)) * 90
+                session.render_progress = min(pct, 95)
+                session.last_stage_result = result.to_dict()
+
+            result = pipeline_engine.run(
+                pipeline_name=pipeline_name,
+                session=session,
+                callbacks={
+                    "on_stage_start": on_stage_start,
+                    "on_stage_complete": on_stage_complete,
+                },
             )
-            session.preview_path = str(output)
-            session.render_state = "done"
-            session.render_progress = 100
+            if result["success"]:
+                session.render_state = "done"
+                session.render_progress = 100
+                session.preview_path = result.get("output_path", "")
+                session.pipeline_result = result
+            else:
+                session.render_state = "error"
+                session.render_error = result
         except Exception:
             if session.render_state == "rendering":
                 session.render_state = "error"
         finally:
             session_manager._save_session(session)
 
-    threading.Thread(target=render_thread, daemon=True).start()
-    return {"success": True, "message": "渲染已开始"}
+    threading.Thread(target=pipeline_thread, daemon=True).start()
+    return {"success": True, "message": "管道渲染已启动", "pipeline": pipeline_name}
 
 @app.get("/api/render/status/{session_id}")
 async def render_status(session_id: str):
@@ -332,8 +348,31 @@ async def render_status(session_id: str):
     return {
         "state": session.render_state,
         "progress": session.render_progress,
+        "current_stage": getattr(session, "current_stage", ""),
+        "last_stage_result": getattr(session, "last_stage_result", None),
         "preview_url": f"/api/render-output/{session_id}" if session.preview_path else "",
     }
+
+@app.get("/api/pipelines")
+async def list_pipelines():
+    """列出可用管道"""
+    pipes = []
+    pipe_dir = Path("/home/shrine/conversational-editor/pipelines")
+    if pipe_dir.exists():
+        for f in sorted(pipe_dir.glob("*.yaml")):
+            try:
+                with open(f) as fp:
+                    p = yaml.safe_load(fp)
+                stages = [s["name"] for s in p.get("stages", [])]
+                pipes.append({
+                    "name": f.stem,
+                    "description": p.get("description", ""),
+                    "stages": stages,
+                    "version": p.get("version", "0.1"),
+                })
+            except Exception:
+                pass
+    return {"success": True, "pipelines": pipes}
 
 @app.post("/api/render/cancel/{session_id}")
 async def cancel_render(session_id: str):
