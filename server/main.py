@@ -3,7 +3,8 @@
 import json
 import os
 import yaml
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+import shutil
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -40,6 +41,38 @@ async def root():
     if index_path.exists():
         return FileResponse(str(index_path))
     return {"message": "对话式视频剪辑工作台 API", "docs": "/docs"}
+
+
+@app.post("/api/upload")
+async def upload_video(file: UploadFile = File(...)):
+    """上传视频文件 — 拖入/选择文件的入口"""
+    upload_dir = Path("/tmp/conversational-editor/uploads")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # 保留原文件名，追加 session 前缀防止冲突
+    safe_name = file.filename or "video.mp4"
+    dest = upload_dir / safe_name
+
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # 调用 load-video 逻辑
+    session = session_manager.create_session()
+    try:
+        info = session.load_video(str(dest))
+        return {
+            "success": True,
+            "session_id": session.id,
+            "source_id": info["id"],
+            "filename": info["filename"],
+            "duration": info["duration"],
+            "fps": info["fps"],
+            "width": info["width"],
+            "height": info["height"],
+            "analysis": info.get("analysis"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/load-video")

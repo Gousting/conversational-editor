@@ -758,10 +758,9 @@ document.getElementById('file-input').addEventListener('change', async e => {
   if (!f) return;
   showOverlay('分析视频中…');
   try {
-    const resp = await fetch('/api/load-video', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filepath: f.path || `/tmp/${f.name}` }),
-    });
+    const form = new FormData();
+    form.append('file', f);
+    const resp = await fetch('/api/upload', { method: 'POST', body: form });
     const d = await resp.json();
     if (d.success) {
       sessionId = d.session_id;
