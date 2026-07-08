@@ -280,12 +280,23 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 /* Marker tooltip */
 .marker-tooltip {
   position: fixed; background: var(--surface-3); border: 1px solid var(--accent);
-  border-radius: var(--radius-sm); padding: 4px 8px; font-size: 11px;
+  border-radius: var(--radius-sm); padding: 6px 8px; font-size: 11px;
   font-family: var(--font-mono); color: var(--text-primary);
   pointer-events: none; z-index: 50; white-space: nowrap;
   box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  max-width: 280px;
 }
 .marker-tooltip.hidden { display: none; }
+.marker-tooltip img {
+  display: block; width: 240px; height: 135px; object-fit: cover;
+  border-radius: 3px; margin-bottom: 4px; background: #000;
+}
+.marker-tooltip .tt-time {
+  font-size: 11px; color: var(--accent); font-weight: 500;
+}
+.marker-tooltip .tt-label {
+  font-size: 10px; color: var(--text-muted); margin-top: 1px;
+}
 
 /* Progress bar */
 .progress-bar-container {
@@ -497,10 +508,17 @@ function seekTo(pct) {
 function addMarkerAtCurrent() {
   if (!videoDuration) return;
   const t = player.currentTime;
-  // Prevent duplicates within 0.5s
-  if (markers.some(m => Math.abs(m.time - t) < 0.5)) return;
-  markers.push({ id: 'm' + Date.now(), time: t, label: '' });
-  markers.sort((a, b) => a.time - b.time);
+  // 默认 3 秒窗口: [t-1s, t+2s]
+  const start = Math.max(0, t - 1.0);
+  const end = Math.min(t + 2.0, videoDuration);
+  // Prevent overlapping duplicates (marker ranges within 0.3s of each other)
+  if (markers.some(m => {
+    const ms = m.start ?? m.time ?? 0;
+    const me = m.end ?? (m.time ?? 0) + 3;
+    return !(end < ms || start > me);
+  })) return;
+  markers.push({ id: 'm' + Date.now(), start: start, end: end, time: t, label: '' });
+  markers.sort((a, b) => (a.start ?? a.time) - (b.start ?? b.time));
   updateMarkerUI();
   flashMarkerHint();
 }
@@ -513,12 +531,13 @@ function removeMarker(id) {
 function removeNearestMarker(time) {
   if (!markers.length) return;
   let nearest = markers[0];
-  let minDist = Math.abs(nearest.time - time);
+  let minDist = Math.abs((nearest.start ?? nearest.time) - time);
   for (const m of markers) {
-    const d = Math.abs(m.time - time);
+    const mt = m.start ?? m.time;
+    const d = Math.abs(mt - time);
     if (d < minDist) { minDist = d; nearest = m; }
   }
-  if (minDist < 1.5) removeMarker(nearest.id);
+  if (minDist < 2.0) removeMarker(nearest.id);
 }
 
 function updateMarkerUI() {
@@ -530,12 +549,15 @@ function updateMarkerUI() {
   const list = document.getElementById('marker-list');
   if (n > 0) {
     list.classList.remove('hidden');
-    list.innerHTML = markers.map(m => `
-      <div class="marker-item" onclick="player.currentTime=${m.time};player.play()" title="点击跳转到 ${fmtTime(m.time)}">
-        ${fmtTime(m.time)}${m.label ? ' ' + m.label : ''}
+    list.innerHTML = markers.map(m => {
+      const t = m.start ?? m.time;
+      const dur = m.end ? (m.end - (m.start ?? 0)).toFixed(1) : '3.0';
+      return `
+      <div class="marker-item" onclick="player.currentTime=${t};player.play()" title="点击跳转">
+        ${fmtTime(t)} ~ ${fmtTime((m.end ?? t+3))}${m.label ? ' ' + m.label : ''}
         <span class="del-btn" onclick="event.stopPropagation();removeMarker('${m.id}')" title="删除">×</span>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   } else {
     list.classList.add('hidden');
   }
@@ -561,7 +583,11 @@ function flashMarkerHint() {
 
 function getMarkersContext() {
   if (!markers.length) return '';
-  return markers.map(m => `@${m.time.toFixed(1)}s${m.label ? ' ' + m.label : ''}`).join(' | ');
+  return markers.map(m => {
+    const t = m.start ?? m.time;
+    const e = m.end ?? (m.time ?? 0) + 3;
+    return `@${t.toFixed(1)}-${e.toFixed(1)}s${m.label ? ' ' + m.label : ''}`;
+  }).join(' | ');
 }
 
 // ═══════════════════════════════════════════
@@ -609,28 +635,28 @@ function drawTimelineStrip() {
     ctx.beginPath(); ctx.moveTo(x, 2); ctx.lineTo(x, H - 2); ctx.stroke();
   }
 
-  // Draw markers with time labels
+  // Draw markers as colored blocks (ranges)
   markers.forEach(m => {
-    const x = (m.time / videoDuration) * W;
-    ctx.fillStyle = '#F59E0B';
-    ctx.beginPath();
-    ctx.moveTo(x, H - 4);
-    ctx.lineTo(x - 5, H - 16);
-    ctx.lineTo(x + 5, H - 16);
-    ctx.closePath();
-    ctx.fill();
-
-    // Time label below marker
-    ctx.fillStyle = 'rgba(245,158,11,0.6)';
+    const ms = m.start ?? m.time;
+    const me = m.end ?? (m.time ?? 0) + 3;
+    const x = (ms / videoDuration) * W;
+    const w = Math.max(((me - ms) / videoDuration) * W, 8);
+    // Filled block
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.3)';
+    ctx.fillRect(x, 4, w, H - 12);
+    // Border
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.7)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, 4, w, H - 12);
+    // Time label
+    ctx.fillStyle = 'rgba(245,158,11,0.7)';
     ctx.font = '8px "Inter", sans-serif';
     ctx.textAlign = 'center';
-    const timeStr = fmtTime(m.time);
-    ctx.fillText(timeStr, x, H - 18);
-
-    if (m.label) {
+    ctx.fillText(fmtTime(ms) + '-' + fmtTime(me), x + w/2, H - 2);
+    if (m.label && w > 40) {
       ctx.fillStyle = '#F7F8F8';
       ctx.font = '9px "Inter", sans-serif';
-      ctx.fillText(m.label, x, H - 28);
+      ctx.fillText(m.label, x + w/2, H/2 + 3);
     }
   });
 
@@ -706,8 +732,10 @@ document.getElementById('timeline-strip').addEventListener('click', e => {
   const t = pct * videoDuration;
 
   if (e.shiftKey) {
-    markers.push({ id: 'm' + Date.now(), time: t, label: '' });
-    markers.sort((a, b) => a.time - b.time);
+    const start = Math.max(0, t - 1.0);
+    const end = Math.min(t + 2.0, videoDuration);
+    markers.push({ id: 'm' + Date.now(), start, end, time: t, label: '' });
+    markers.sort((a, b) => (a.start ?? a.time) - (b.start ?? b.time));
     updateMarkerUI();
   } else {
     player.currentTime = t;
@@ -724,33 +752,64 @@ document.getElementById('timeline-strip').addEventListener('contextmenu', e => {
   removeNearestMarker(t);
 });
 
-// Hover tooltip on timeline: show marker time + frame
+// Hover tooltip on timeline: show frame thumbnail for any position
 const tooltip = document.getElementById('marker-tooltip');
+let tooltipTimer = null;
+let lastTooltipTime = -1;
+
 document.getElementById('timeline-strip').addEventListener('mousemove', e => {
-  if (!videoDuration || !markers.length) { tooltip.classList.add('hidden'); return; }
+  if (!videoDuration) { tooltip.classList.add('hidden'); return; }
   const rect = e.target.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const t = (x / rect.width) * videoDuration;
-  const near = markers.find(m => Math.abs(m.time - t) < 0.8);
-  if (near) {
-    const frame = Math.round(near.time * 30);
-    tooltip.textContent = `${fmtTime(near.time)} · 第${frame}帧${near.label ? ' · ' + near.label : ''}`;
-    tooltip.classList.remove('hidden');
-    tooltip.style.left = (e.clientX + 12) + 'px';
-    tooltip.style.top = (e.clientY - 30) + 'px';
-  } else {
-    tooltip.classList.add('hidden');
-  }
-});
-document.getElementById('timeline-strip').addEventListener('mouseleave', () => tooltip.classList.add('hidden'));
+  if (t < 0 || t > videoDuration) { tooltip.classList.add('hidden'); return; }
 
-// AI 自动初稿 — 基于标记点直接生成片段
+  // Find nearby marker
+  const nearMarker = markers.find(m => {
+    const ms = m.start ?? m.time;
+    const me = m.end ?? (m.time ?? 0) + 3;
+    return t >= ms - 0.3 && t <= me + 0.3;
+  });
+
+  // Debounce frame loading
+  const roundedTime = Math.round(t * 2) / 2; // round to 0.5s
+  if (roundedTime === lastTooltipTime) return; // same 0.5s bucket, skip
+  lastTooltipTime = roundedTime;
+
+  clearTimeout(tooltipTimer);
+  tooltipTimer = setTimeout(() => {
+    const frameUrl = sessionId ? `/api/frame/${sessionId}?time=${roundedTime.toFixed(1)}` : '';
+    const frameNum = Math.round(roundedTime * 30);
+
+    let html = '';
+    if (frameUrl) {
+      html += `<img src="${frameUrl}" alt="帧预览" loading="lazy" onerror="this.style.display='none'">`;
+    }
+    html += `<div class="tt-time">${fmtTime(roundedTime)} · 第${frameNum}帧</div>`;
+    if (nearMarker) {
+      html += `<div class="tt-label">📍 ${nearMarker.label || '标记'} (${fmtTime(nearMarker.start ?? nearMarker.time)}~${fmtTime(nearMarker.end ?? (nearMarker.time??0)+3)})</div>`;
+    }
+
+    tooltip.innerHTML = html;
+    tooltip.classList.remove('hidden');
+    tooltip.style.left = Math.min(e.clientX + 14, window.innerWidth - 270) + 'px';
+    tooltip.style.top = Math.max(e.clientY - 160, 10) + 'px';
+  }, 150); // 150ms debounce
+});
+
+document.getElementById('timeline-strip').addEventListener('mouseleave', () => {
+  clearTimeout(tooltipTimer);
+  tooltip.classList.add('hidden');
+  lastTooltipTime = -1;
+});
+
+// AI 自动初稿 — 对话式引导
 async function autoCompose() {
   if (!sessionId) { addMsg('agent', '⚠️ 请先加载视频'); return; }
-  if (!markers.length) { addMsg('agent', '⚠️ 请先在预览台打标记'); return; }
+  if (!markers.length) { addMsg('agent', '⚠️ 请先在预览台打标记（播放时按 M 键）'); return; }
   if (!ws || ws.readyState !== WebSocket.OPEN) { addMsg('agent', '⚠️ 未连接服务器'); return; }
 
-  showOverlay('AI 生成初稿中…');
+  addMsg('agent', '<em>🤖 开始对话引导…</em>');
   ws.send(JSON.stringify({ text: 'auto_compose' }));
 }
 
@@ -804,6 +863,14 @@ function sendChat(text) {
     if (!text) input.value = '';
   } else {
     addMsg('agent', '未连接服务器，请先加载视频');
+  }
+}
+
+// answerCompose: 用户点击 compose 建议按钮，直接发送答案
+function answerCompose(answer) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    addMsg('user', answer);
+    ws.send(JSON.stringify({ text: answer }));
   }
 }
 
@@ -923,11 +990,10 @@ function connect() {
       case 'session_ready': break;
       case 'user_message': addMsg('user', m.text); break;
       case 'edit_result':
-        hideOverlay();  // 响应到了立刻关 loading
+        hideOverlay();
         const r = m.result;
         let html = r.message || (r.success ? '✓' : '✗');
         if (r.plan) {
-          // Populate proposed clips on timeline
           proposedClips = r.plan.clips || [];
           html = r.display || formatPlan(r.plan);
           html += `<div class="plan-actions">
@@ -935,12 +1001,36 @@ function connect() {
             <button class="btn-modify" onclick="document.getElementById('chat-input').focus()">✏️ 修改</button>
           </div>`;
         }
-        // Clear proposals when plan executed
         if (r.action === 'execute_plan' || r.message?.includes('已按方案添加')) {
           proposedClips = [];
         }
         addMsg('agent', html);
         if (r.timeline) { timeline = r.timeline; }
+        drawTimelineStrip();
+        break;
+      case 'compose_guide':
+        // 对话引导：显示问题 + 建议按钮
+        hideOverlay();
+        html = `<h3>🤖 ${m.question}</h3>`;
+        if (m.suggestions?.length) {
+          html += '<div class="quick-suggestions" id="compose-suggestions">';
+          m.suggestions.forEach(s => {
+            html += `<button onclick="answerCompose('${s}')">${s}</button>`;
+          });
+          html += '</div>';
+        }
+        addMsg('agent', html);
+        break;
+      case 'compose_done':
+        // 对话完成：显示方案
+        hideOverlay();
+        proposedClips = (m.plan?.clips) || [];
+        html = m.display || '';
+        html += `<div class="plan-actions">
+          <button class="btn-approve" onclick="sendCmd('执行方案')">✅ 执行</button>
+          <button class="btn-modify" onclick="document.getElementById('chat-input').focus()">✏️ 修改</button>
+        </div>`;
+        addMsg('agent', html);
         drawTimelineStrip();
         break;
       case 'preview_ready':

@@ -190,6 +190,35 @@ async def get_session_info(session_id: str):
     }
 
 
+@app.get("/api/frame/{session_id}")
+async def get_frame(session_id: str, time: float = 0):
+    """提取指定时间点的帧图片"""
+    import subprocess, tempfile, os
+    session = session_manager.get_session(session_id)
+    if not session or not session.source_path:
+        raise HTTPException(status_code=404, detail="Session 不存在")
+    
+    cache_dir = Path(f"/tmp/conversational-editor/frames/{session_id}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"frame_{time:.1f}.jpg"
+    
+    if not cache_file.exists():
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-ss", str(time),
+            "-i", session.source_path,
+            "-vframes", "1",
+            "-q:v", "5",
+            "-s", "320x180",
+            str(cache_file),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0 or not cache_file.exists():
+            raise HTTPException(status_code=500, detail=f"帧提取失败: {result.stderr[-200:]}")
+    
+    return FileResponse(str(cache_file), media_type="image/jpeg")
+
+
 @app.get("/api/thumbnails/{session_id}")
 async def get_thumbnails(session_id: str, count: int = 10):
     """获取视频缩略图条带"""
@@ -507,17 +536,34 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
 
             # NLU 解析
             context = session.get_context()
+            # 如果 compose 对话活跃中，标记 context
+            if session.compose_state and session.compose_state.get("stage") not in (None, "done"):
+                context["compose_active"] = True
             action = nlu.parse(user_input, context)
 
             # 执行操作
             result = session.execute_action(action)
 
             # 返回结果
-            await ws.send_json({
+            resp = {
                 "type": "edit_result",
                 "action": action.get("action", "unknown"),
                 "result": result,
-            })
+            }
+
+            # 对话引导特殊处理
+            if action.get("action") == "compose_answer" or result.get("action") in ("compose_guide", "compose_done"):
+                cs = result.get("compose_stage") or {}
+                if cs.get("suggestions"):
+                    resp["type"] = "compose_guide"
+                    resp["question"] = cs["question"]
+                    resp["suggestions"] = cs["suggestions"]
+                if result.get("action") == "compose_done":
+                    resp["type"] = "compose_done"
+                    resp["plan"] = result.get("plan", {})
+                    resp["display"] = result.get("display", "")
+
+            await ws.send_json(resp)
 
             # 如果是渲染，发送预览路径
             if result.get("preview_path"):

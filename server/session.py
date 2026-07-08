@@ -24,6 +24,7 @@ class EditSession:
         self.analysis: VideoAnalysis | None = None
         self.current_plan: EditPlan | None = None
         self.markers: list[dict] = []
+        self.compose_state: dict = {}  # 对话式初稿状态机 {stage, style, effect, pace, ...}
         self.preview_path: str = ""  # 最新渲染产物路径
         self.render_state: str = "idle"  # idle | rendering | done | error
         self.render_progress: float = 0.0
@@ -82,27 +83,51 @@ class EditSession:
         }
 
     def _quick_plan_from_markers(self, intent: str) -> dict:
-        """基于标记秒出方案 — 不调 LLM"""
-        markers = sorted(self.markers, key=lambda m: m["time"])
+        """基于标记秒出方案 — 标记有范围时直接用范围，否则默认±窗口"""
+        markers = sorted(self.markers, key=lambda m: m.get("start", m.get("time", 0)))
         
-        # 确定风格
-        vibe_map = {
-            "高光": "热血快节奏", "集锦": "高光混剪", "精彩": "高光混剪",
-            "搞笑": "搞笑娱乐", "燃": "热血燃向", "热血": "热血燃向",
-            "文艺": "文艺慢剪", "治愈": "文艺慢剪",
-            "快剪": "快节奏卡点", "慢放": "慢放精彩",
-            "混剪": "混剪", "卡点": "快节奏卡点",
-        }
-        vibe = next((v for k, v in vibe_map.items() if k in intent), "混剪")
+        # 确定风格：从 compose_state 或 intent 中提取
+        vibe = self.compose_state.get("style", "")
+        if not vibe:
+            vibe_map = {
+                "高光": "热血快节奏", "集锦": "高光混剪", "精彩": "高光混剪",
+                "搞笑": "搞笑娱乐", "燃": "热血燃向", "热血": "热血燃向",
+                "文艺": "文艺慢剪", "治愈": "文艺慢剪",
+                "快剪": "快节奏卡点", "慢放": "慢放精彩",
+                "混剪": "混剪", "卡点": "快节奏卡点",
+            }
+            vibe = next((v for k, v in vibe_map.items() if k in intent), "混剪")
+
+        # 从 compose_state 读取用户指定的参数
+        user_effect = self.compose_state.get("effect", "")
+        user_pace = self.compose_state.get("pace", intent)
 
         clips = []
         for i, m in enumerate(markers):
             label = m.get("label") or f"片段{i+1}"
-            start = m["time"]
-            # 默认取 3-5 秒片段
-            end = min(start + 3.5, (self.analysis.duration if self.analysis else 999))
-            speed = 0.5 if "慢放" in intent or "慢" in intent else 1.0
-            trans = "flash" if "燃" in intent or "高光" in intent else ""
+            # 使用标记范围（如果有 start/end），否则用 time 推算默认窗口
+            if "start" in m and "end" in m:
+                start, end = m["start"], m["end"]
+            elif "time" in m:
+                start = max(0, m["time"] - 1.0)
+                end = min(m["time"] + 2.0, (self.analysis.duration if self.analysis else 999))
+            else:
+                continue
+
+            # 根据节奏调整 speed
+            if "慢放" in user_pace or "慢" in user_pace:
+                speed = 0.5
+            elif "快" in user_pace or "燃" in user_pace:
+                speed = 1.2
+            else:
+                speed = 1.0
+
+            # 根据效果决定过渡
+            trans = ""
+            if "闪白" in user_effect or "燃" in vibe or "高光" in vibe:
+                trans = "flash"
+            elif "淡入" in user_effect or "文艺" in vibe:
+                trans = "dissolve"
             clips.append({"start": start, "end": end, "label": label, "speed": speed, "transition_after": trans})
 
         plan = EditPlan(
@@ -333,20 +358,55 @@ class EditSession:
                 result["message"] = action.get("reason", "无法理解指令")
 
             elif act == "auto_compose":
-                # 自动生成初稿：先出方案，再自动执行
+                # 自动生成初稿：启动对话式引导
                 if not self.markers:
                     result["success"] = False
                     result["message"] = "请先在预览台打标记"
                 else:
-                    # 生成方案
-                    plan_result = self._quick_plan_from_markers("AI自动初稿")
-                    # 自动执行
-                    exec_result = self.execute_plan()
-                    result.update(plan_result)
-                    result.update(exec_result)
-                    result["message"] = f"🤖 AI初稿完成：{exec_result.get('message', '')}"
+                    # 如果 compose_state 已完成，直接生成
+                    if self.compose_state.get("stage") == "done":
+                        plan_result = self._quick_plan_from_markers(self.compose_state.get("style", "AI初稿"))
+                        exec_result = self.execute_plan()
+                        result.update(plan_result)
+                        result.update(exec_result)
+                        result["message"] = f"🤖 AI初稿完成：{exec_result.get('message', '')}"
+                        result["display"] = plan_result.get("display", "")
+                        result["timeline"] = self.timeline.to_list()
+                        self.compose_state = {}
+                    else:
+                        # 开始对话引导
+                        result["action"] = "compose_guide"
+                        result["compose_stage"] = self._get_compose_question()
+                        result["message"] = result["compose_stage"]["question"]
+
+            elif act == "compose_answer":
+                # 对话式初稿：用户回答引导问题
+                stage = self.compose_state.get("stage", "style")
+                answer = action.get("answer", "")
+                
+                if stage == "style":
+                    self.compose_state["style"] = answer
+                    self.compose_state["stage"] = "effect"
+                elif stage == "effect":
+                    self.compose_state["effect"] = answer
+                    self.compose_state["stage"] = "pace"
+                elif stage == "pace":
+                    self.compose_state["pace"] = answer
+                    self.compose_state["stage"] = "done"
+                
+                if self.compose_state["stage"] == "done":
+                    # 所有问题答完，生成方案
+                    plan_result = self._quick_plan_from_markers(self.compose_state.get("style", "AI初稿"))
+                    result["action"] = "compose_done"
+                    result["plan"] = plan_result.get("plan", {})
                     result["display"] = plan_result.get("display", "")
+                    result["message"] = f"根据你的偏好（风格: {self.compose_state.get('style','')} / 效果: {self.compose_state.get('effect','')} / 节奏: {self.compose_state.get('pace','')}），生成了方案："
                     result["timeline"] = self.timeline.to_list()
+                    self.compose_state = {}
+                else:
+                    result["action"] = "compose_guide"
+                    result["compose_stage"] = self._get_compose_question()
+                    result["message"] = result["compose_stage"]["question"]
 
             elif act == "propose":
                 # AI 生成剪辑方案
@@ -394,6 +454,30 @@ class EditSession:
             "timeline_items": self.timeline.to_list(),
             "markers": self.markers,  # 用户标记的时间点
         }
+
+    def _get_compose_question(self) -> dict:
+        """获取对话式引导的当前问题"""
+        stage = self.compose_state.get("stage", "style")
+        marker_count = len(self.markers)
+        
+        questions = {
+            "style": {
+                "stage": "style",
+                "question": f"好的！我看到你有 {marker_count} 个标记片段。先告诉我，你想要什么**风格**？",
+                "suggestions": ["热血燃向", "高光混剪", "搞笑娱乐", "文艺慢剪", "快节奏卡点", "暗黑酷炫"],
+            },
+            "effect": {
+                "stage": "effect",
+                "question": f"收到！想突出什么**效果**？",
+                "suggestions": ["闪白转场", "慢动作特写", "淡入淡出", "抖动+音效", "速度渐变", "直接硬切"],
+            },
+            "pace": {
+                "stage": "pace",
+                "question": f"最后，整体**节奏**怎么走？",
+                "suggestions": ["快节奏冲击", "慢→快递进", "慢放沉浸", "快慢交替", "随便剪"],
+            },
+        }
+        return questions.get(stage, questions["style"])
 
 
 class SessionManager:

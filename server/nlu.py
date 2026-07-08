@@ -77,6 +77,11 @@ class NLUParser:
         Returns:
             操作 dict，action 字段为操作类型
         """
+        # 如果 compose 对话活跃中，用户输入直接视为 compose_answer
+        if context and context.get("compose_active"):
+            answer = user_input.strip()
+            return {"action": "compose_answer", "answer": answer}
+
         # 先尝试规则匹配
         rule_result = self._rule_parse(user_input, context or {})
         if rule_result and rule_result.get("action") != "unknown":
