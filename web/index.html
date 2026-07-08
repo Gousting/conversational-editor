@@ -707,7 +707,6 @@ function sendChat(text) {
     showOverlay('处理中…');
     ws.send(JSON.stringify({ text: fullCmd }));
     if (!text) input.value = '';
-    setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) hideOverlay(); }, 3000);
   } else {
     addMsg('agent', '未连接服务器，请先加载视频');
   }
@@ -718,7 +717,6 @@ function sendCmd(cmd) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     showOverlay('处理中…');
     ws.send(JSON.stringify({ text: cmd }));
-    setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) hideOverlay(); }, 3000);
   } else {
     addMsg('agent', '未连接服务器');
   }
@@ -771,6 +769,12 @@ document.getElementById('file-input').addEventListener('change', async e => {
       document.getElementById('status').textContent = `${d.filename} · ${d.duration.toFixed(0)}s`;
       timeDisplay.textContent = `00:00 / ${fmtTime(d.duration)}`;
       seekBar.max = 1000; seekBar.value = 0;
+
+      // Show player with media source
+      placeholder.style.display = 'none';
+      player.style.display = 'block';
+      player.src = `/api/media/${sessionId}`;
+
       connect();
 
       // Load thumbnails
@@ -824,6 +828,7 @@ function connect() {
       case 'session_ready': break;
       case 'user_message': addMsg('user', m.text); break;
       case 'edit_result':
+        hideOverlay();  // 响应到了立刻关 loading
         const r = m.result;
         let html = r.message || (r.success ? '✓' : '✗');
         if (r.plan) {
