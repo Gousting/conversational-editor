@@ -51,9 +51,14 @@ class EditSession:
         return result
 
     def propose_plan(self, user_intent: str) -> dict:
-        """AI 生成剪辑方案"""
+        """AI 生成剪辑方案 — 有标记时秒出，无标记时调 LLM"""
+        # 如果有用户标记，直接基于标记生成方案（秒级响应）
+        if self.markers:
+            return self._quick_plan_from_markers(user_intent)
+
+        # 无标记时走 LLM
         if not self.analysis:
-            return {"success": False, "message": "请先加载视频"}
+            return {"success": False, "message": "请先加载视频或在预览台打标记"}
 
         summary = self.analyzer.summary(self.analysis)
         plan = self.planner.propose_plan(summary, user_intent, self.analysis.duration)
@@ -71,6 +76,53 @@ class EditSession:
                      "speed": c.speed, "transition_after": c.transition_after}
                     for c in plan.clips
                 ],
+                "reasoning": plan.reasoning,
+            },
+            "display": self.planner.format_plan_display(plan),
+        }
+
+    def _quick_plan_from_markers(self, intent: str) -> dict:
+        """基于标记秒出方案 — 不调 LLM"""
+        markers = sorted(self.markers, key=lambda m: m["time"])
+        
+        # 确定风格
+        vibe_map = {
+            "高光": "热血快节奏", "集锦": "高光混剪", "精彩": "高光混剪",
+            "搞笑": "搞笑娱乐", "燃": "热血燃向", "热血": "热血燃向",
+            "文艺": "文艺慢剪", "治愈": "文艺慢剪",
+            "快剪": "快节奏卡点", "慢放": "慢放精彩",
+            "混剪": "混剪", "卡点": "快节奏卡点",
+        }
+        vibe = next((v for k, v in vibe_map.items() if k in intent), "混剪")
+
+        clips = []
+        for i, m in enumerate(markers):
+            label = m.get("label") or f"片段{i+1}"
+            start = m["time"]
+            # 默认取 3-5 秒片段
+            end = min(start + 3.5, (self.analysis.duration if self.analysis else 999))
+            speed = 0.5 if "慢放" in intent or "慢" in intent else 1.0
+            trans = "flash" if "燃" in intent or "高光" in intent else ""
+            clips.append({"start": start, "end": end, "label": label, "speed": speed, "transition_after": trans})
+
+        plan = EditPlan(
+            title=intent,
+            target_duration=f"约{len(clips)*3}秒",
+            vibe=vibe,
+            structure=[f"片段{i+1}" for i in range(len(clips))],
+            clips=[ClipProposal(**c) for c in clips],
+            reasoning=f"基于 {len(markers)} 个标记点自动生成",
+        )
+        self.current_plan = plan
+
+        return {
+            "success": True,
+            "plan": {
+                "title": plan.title,
+                "vibe": plan.vibe,
+                "target_duration": plan.target_duration,
+                "structure": plan.structure,
+                "clips": clips,
                 "reasoning": plan.reasoning,
             },
             "display": self.planner.format_plan_display(plan),

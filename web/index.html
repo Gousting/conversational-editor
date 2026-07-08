@@ -116,6 +116,34 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #player-bar .time-display { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); min-width: 90px; text-align: center; }
 #player-bar .marker-hint { font-size: 10px; color: var(--text-muted); opacity: 0; transition: opacity 200ms; }
 #player-bar .marker-hint.visible { opacity: 1; }
+#player-bar .speed-btn {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  background: transparent; color: var(--text-muted);
+  border: 1px solid var(--hairline); border-radius: 3px;
+  padding: 1px 5px; cursor: pointer; transition: all 150ms;
+}
+#player-bar .speed-btn:hover { color: var(--text-primary); border-color: var(--text-muted); }
+#player-bar .speed-btn.active { color: var(--accent); border-color: var(--accent); }
+
+#marker-list {
+  display: flex; gap: 6px; padding: 4px 12px; flex-wrap: wrap;
+  background: var(--surface-1); border-bottom: 1px solid var(--hairline);
+  overflow-x: auto; min-height: 0;
+}
+#marker-list.hidden { display: none; }
+#marker-list .marker-item {
+  font-family: var(--font-mono); font-size: 10px;
+  background: var(--marker-dim); color: var(--marker-color);
+  padding: 2px 6px; border-radius: 3px; cursor: pointer;
+  display: flex; align-items: center; gap: 4px;
+  white-space: nowrap; transition: background 150ms;
+}
+#marker-list .marker-item:hover { background: rgba(245,158,11,0.5); }
+#marker-list .marker-item .del-btn {
+  font-size: 12px; color: var(--text-muted); cursor: pointer;
+  line-height: 1; padding: 0 2px;
+}
+#marker-list .marker-item .del-btn:hover { color: #EF4444; }
 
 /* ── Timeline Strip ── */
 #timeline-strip {
@@ -311,10 +339,15 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
     <div id="player-bar">
       <button id="btn-play" onclick="togglePlay()">▶</button>
       <button id="btn-marker" onclick="addMarkerAtCurrent()" title="添加标记 (M 键)">📍</button>
+      <button onclick="setSpeed(0.5)" class="speed-btn" title="0.5x 慢放">½</button>
+      <button onclick="setSpeed(1)" class="speed-btn active" title="1x 正常">1×</button>
+      <button onclick="setSpeed(2)" class="speed-btn" title="2x 快放">2×</button>
       <input type="range" id="seek-bar" min="0" max="1000" value="0" oninput="seekTo(this.value/1000)">
       <span class="time-display" id="time-display">00:00 / 00:00</span>
-      <span class="marker-hint" id="marker-hint">按 M 添加标记</span>
+      <span class="marker-hint" id="marker-hint">按 M 添加标记 | 右键时间轴删除</span>
     </div>
+
+    <div id="marker-list" class="hidden"></div>
 
     <div id="timeline-strip">
       <canvas id="tl-strip-canvas"></canvas>
@@ -430,6 +463,14 @@ function togglePlay() {
   else { player.pause(); document.getElementById('btn-play').textContent = '▶'; }
 }
 
+function setSpeed(s) {
+  player.playbackRate = s;
+  document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.speed-btn').forEach(b => {
+    if (parseFloat(b.textContent) === s) b.classList.add('active');
+  });
+}
+
 player.addEventListener('timeupdate', () => {
   if (!videoDuration) return;
   const pct = player.currentTime / videoDuration;
@@ -481,6 +522,21 @@ function updateMarkerUI() {
   const n = markers.length;
   markerBadge.textContent = `📍 ${n}个标记`;
   markerBadge.classList.toggle('visible', n > 0);
+  
+  // Render marker list
+  const list = document.getElementById('marker-list');
+  if (n > 0) {
+    list.classList.remove('hidden');
+    list.innerHTML = markers.map(m => `
+      <div class="marker-item" onclick="player.currentTime=${m.time};player.play()" title="点击跳转到 ${fmtTime(m.time)}">
+        ${fmtTime(m.time)}${m.label ? ' ' + m.label : ''}
+        <span class="del-btn" onclick="event.stopPropagation();removeMarker('${m.id}')" title="删除">×</span>
+      </div>
+    `).join('');
+  } else {
+    list.classList.add('hidden');
+  }
+
   drawTimelineStrip();
   syncMarkers();
 }
@@ -550,7 +606,7 @@ function drawTimelineStrip() {
     ctx.beginPath(); ctx.moveTo(x, 2); ctx.lineTo(x, H - 2); ctx.stroke();
   }
 
-  // Draw markers
+  // Draw markers with time labels
   markers.forEach(m => {
     const x = (m.time / videoDuration) * W;
     ctx.fillStyle = '#F59E0B';
@@ -561,11 +617,17 @@ function drawTimelineStrip() {
     ctx.closePath();
     ctx.fill();
 
+    // Time label below marker
+    ctx.fillStyle = 'rgba(245,158,11,0.6)';
+    ctx.font = '8px "Inter", sans-serif';
+    ctx.textAlign = 'center';
+    const timeStr = fmtTime(m.time);
+    ctx.fillText(timeStr, x, H - 18);
+
     if (m.label) {
       ctx.fillStyle = '#F7F8F8';
-      ctx.font = '10px "Inter", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(m.label, x, H - 18);
+      ctx.font = '9px "Inter", sans-serif';
+      ctx.fillText(m.label, x, H - 28);
     }
   });
 
