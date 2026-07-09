@@ -1,17 +1,13 @@
-# game-highlight — 游戏高光混剪管道
+# game-highlight — 游戏高光混剪管道 v0.4
 #
-# 将手动标记的片段 → 验证 → 音频 → 字幕 → 合成 → 质检的多阶段生产流水线。
+# 音乐先行工作流：铺 BGM → 标重音点 → 画面卡节拍 → 情绪驱动音频闪避
 # 每个阶段产出可检查的 artifact，关键节点 checkpoint。
-#
-# 适用于: FPS/MOBA/自走棋 等游戏的高光/搞笑混剪
 
 name: game-highlight
-version: "0.3"
+version: "0.4"
 description: >
-  游戏高光混剪生产管道。从手动标记的片段开始，
-  经验证、音频准备、字幕生成、视频合成到最终质量检查。
-  每个阶段产出结构化 artifact，支持 checkpoint 断点续跑。
-
+  游戏高光混剪生产管道。音乐先行：先加载 BGM 分析节拍/Drop/低谷，
+  画面切点吸附到节拍，对话段自动压低 BGM，动作段 BGM 冲出掩盖跳跃感。
 category: custom
 stability: beta
 
@@ -35,18 +31,19 @@ stages:
     success_criteria:
       - clip_count ≥ 1
 
-  # Stage 2 — 音频准备
+  # Stage 2 — 音频准备（BGM 分析 + 原声探测）
   - name: audio_prep
     requires: validation_report
     produces: audio_manifest
     checkpoint_required: false
     human_approval_default: false
     review_focus:
-      - BGM 与对白音量比在 1:4 ~ 1:3 之间
-      - 静音段不超过 2 秒
+      - BGM 已加载且分析了节拍/Drop/低谷
+      - 对白/BGM 音量比在 1:3 ~ 1:5 之间
+      - BGM 低谷段已标记（用于静音填充）
       - 音频峰值不超过 0dB（避免削波）
     success_criteria:
-      - dialogue_to_bgm_ratio between 2.0 and 5.0
+      - dialogue_to_bgm_ratio between 2.0 and 6.0
 
   # Stage 3 — 字幕生成
   - name: subtitle
@@ -58,19 +55,22 @@ stages:
       - 单行字幕不超过 20 字
       - 字幕显示时长 ≥ 0.5 秒
       - 字幕与标记时间戳对齐
+      - 字幕位置避开画面关键区域
     success_criteria:
       - subtitle_count ≥ 0
 
-  # Stage 4 — 视频合成
+  # Stage 4 — 视频合成（含 BGM 混音 + 音频闪避）
   - name: compose
     requires: [validation_report, audio_manifest, subtitle_manifest]
     produces: composition_report
     checkpoint_required: true
     human_approval_default: false
     review_focus:
-      - xfade 转场参数正确（flash→fadewhite, dissolve→fade）
+      - BGM 混音正确：Drop 段 BGM 全音量，对话段自动压到 25%
+      - 转场参数正确（flash→fadewhite, dissolve→fade）
       - 输出时长与时间轴一致（偏差 < 1%）
       - 输出文件存在且非空
+      - BGM 循环播放无断裂
     success_criteria:
       - output_duration matches expected_duration within 1%
 
@@ -79,17 +79,19 @@ stages:
     requires: composition_report
     produces: qc_report
     checkpoint_required: true
-    human_approval_default: false
+    human_approval_default: true  # 最终质检需要人工确认
     review_focus:
       - 无连续黑帧
-      - 音频轨道存在
       - 音画同步
+      - BGM 与原声不打架（对话段 BGM 确实压低了）
       - 文件大小合理
+      - 结尾渐变黑，非纯黑硬切
     success_criteria:
       - black_frames = 0
       - audio_present = true
+      - audio_sync_ok = true
 
-# ─── 风格剧本（可选覆盖默认规则）───────────────────────────────────────
+# ─── 风格剧本 ───────────────────────────────────────────────────────
 
 playbook:
   flash_color: "#FFE4B5"       # 暖色柔光，禁止纯白
@@ -99,3 +101,11 @@ playbook:
   transition_types: [cut, flash, dissolve]
   end_transition: fade_out     # 结尾渐变黑，非纯黑硬切
   duplicate_prevention: true   # 相邻不重复同一素材段
+  audio_ducking:               # 音频闪避规则
+    dialogue_duck: 0.25        # 对话段 BGM 压到 25%
+    action_push: 1.0           # 动作段 BGM 推到 100%
+    default_level: 0.7         # 默认 BGM 音量
+  beat_alignment:               # 节拍对齐
+    snap_threshold: 0.3        # 吸附阈值（秒）
+    drop_transition: cut       # Drop 段转场类型
+    valley_transition: dissolve # 低谷段转场类型

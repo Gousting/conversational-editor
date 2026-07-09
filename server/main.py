@@ -31,7 +31,7 @@ session_manager = SessionManager()
 nlu = NLUParser()
 skill_manager = SkillManager()  # 全局技能管理器，跨 session 共享
 ref_analyzer = ReferenceAnalyzer()
-pipeline_engine = PipelineEngine()  # 管道渲染引擎
+pipeline_engine = PipelineEngine(pipelines_dir=str(Path(__file__).parent.parent / "pipelines"))  # 管道渲染引擎
 
 
 @app.get("/")
@@ -393,9 +393,13 @@ async def trigger_render(session_id: str, data: dict = None):
             else:
                 session.render_state = "error"
                 session.render_error = result
-        except Exception:
+                session.last_stage_result = {"error": "pipeline returned failed status"}
+        except Exception as e:
+            import traceback
             if session.render_state == "rendering":
                 session.render_state = "error"
+                session.render_error = {"exception": str(e), "traceback": traceback.format_exc()}
+                session.last_stage_result = {"error": str(e)}
         finally:
             session_manager._save_session(session)
 
@@ -435,6 +439,66 @@ async def list_pipelines():
             except Exception:
                 pass
     return {"success": True, "pipelines": pipes}
+
+
+# ═══════════════════════════════════════════
+# BGM & 音频分析
+# ═══════════════════════════════════════════
+
+@app.post("/api/load-bgm/{session_id}")
+async def load_bgm(session_id: str, data: dict):
+    """加载背景音乐并分析节拍结构"""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session 不存在")
+    filepath = data.get("filepath", "")
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="文件不存在")
+    try:
+        result = session.load_bgm(filepath)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/waveform/{session_id}")
+async def get_waveform(session_id: str):
+    """获取 BGM 波形数据（每秒10个采样点，0~1 归一化）"""
+    session = session_manager.get_session(session_id)
+    if not session or not session.bgm_analysis:
+        raise HTTPException(status_code=404, detail="未加载 BGM")
+    a = session.bgm_analysis
+    return {"success": True, "duration": a.duration, "waveform": a.waveform, "samples_per_second": 10}
+
+
+@app.get("/api/bgm-beats/{session_id}")
+async def get_bgm_beats(session_id: str):
+    """获取 BGM 节拍点、Drop 段、低谷段"""
+    session = session_manager.get_session(session_id)
+    if not session or not session.bgm_analysis:
+        raise HTTPException(status_code=404, detail="未加载 BGM")
+    a = session.bgm_analysis
+    return {
+        "success": True,
+        "beats": [{"time": b.time, "strength": b.strength, "is_drop": b.is_drop} for b in a.beats],
+        "drop_sections": a.drop_sections,
+        "valley_sections": a.valley_sections,
+        "energy_segments": a.energy_segments,
+    }
+
+
+@app.get("/api/bgm-info/{session_id}")
+async def get_bgm_info(session_id: str):
+    """获取 BGM 加载状态"""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session 不存在")
+    if not session.bgm_analysis:
+        return {"success": True, "loaded": False}
+    a = session.bgm_analysis
+    return {"success": True, "loaded": True, "path": a.path, "duration": a.duration,
+            "beat_count": len(a.beats), "drop_count": len(a.drop_sections)}
+
 
 @app.post("/api/render/cancel/{session_id}")
 async def cancel_render(session_id: str):
@@ -497,6 +561,16 @@ async def match_skills(intent: str = ""):
         "matched": [s.name for s in matched],
         "context": skill_manager.get_context(intent),
     }
+
+
+@app.post("/api/execute-plan/{session_id}")
+async def execute_plan_endpoint(session_id: str):
+    """直接执行当前方案，不经过 NLU"""
+    session = session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session 不存在")
+    result = session.execute_plan()
+    return result
 
 
 @app.websocket("/ws/{session_id}")

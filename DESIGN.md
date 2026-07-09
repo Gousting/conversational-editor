@@ -2,86 +2,147 @@
 
 ## 1. 产品定义
 
-**一句话**：用文字对话替代手动拖拽时间轴，AI 执行剪辑操作，人做创意决策。
+**一句话**：人在回路中的对话式剪辑。AI 做执行层苦力，人做创意决策。
 
-**与现有竞品的核心差异**：
-- 不是"一条指令自动出成片"（CutAI 路线）
-- 不是"传统时间轴上加 AI 按钮"（Adobe 路线）
-- 是**人在回路中的对话式时间轴构建**——每步操作可见、可回退、可调整
+**核心理念**：
+- 不是"一条指令自动出成片"的黑盒
+- 不是"传统时间轴上加 AI 按钮"
+- 是**对话驱动**——在预览台打标记定位关键时间点，然后用自然语言告诉 AI 你要什么。半自动和全自动的区别只是你说几句
+
+```
+你在聊天里说 "帮我自动规划实现"
+    → AI: 选片 → 生成 → 渲染 → 给下载链接
+```
 
 ---
 
 ## 2. 架构设计
 
 ```
-┌────────────────────────────────────────────────────┐
-│                   前端层 (Presentation)               │
-│  ┌──────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │ 视频预览   │  │ 时间轴可视化   │  │ 对话面板      │ │
-│  │ (Player)  │  │ (只读色块)    │  │ (指令+历史)   │ │
-│  └──────────┘  └──────────────┘  └──────────────┘ │
-│                                                     │
-│  通信: WebSocket（实时） + REST（素材管理）              │
-└─────────────────────┬──────────────────────────────┘
-                      │
-┌─────────────────────▼──────────────────────────────┐
-│                   服务层 (Application)                │
-│  ┌──────────────────────────────────────────────┐  │
-│  │              WebSocket Handler                │  │
-│  │   消息路由 / 会话管理 / 进度推送                │  │
-│  └──────────────────┬───────────────────────────┘  │
-│                     │                                │
-│  ┌──────────────────▼───────────────────────────┐  │
-│  │              会话管理器 (SessionManager)        │  │
-│  │   每个项目一个 session，持有 timeline + history │  │
-│  └──────────────────┬───────────────────────────┘  │
-│                     │                                │
-│  ┌──────────────────▼───────────────────────────┐  │
-│  │              指令解析器 (NLUParser)             │  │
-│  │   自然语言 → 编辑操作 JSON                       │  │
-│  │   依赖: Ollama (qwen3.6-27b)                   │  │
-│  └──────────────────┬───────────────────────────┘  │
-│                     │                                │
-│  ┌──────────────────▼───────────────────────────┐  │
-│  │              操作执行器 (ActionExecutor)         │  │
-│  │   操作 JSON → 修改 timeline → 触发渲染           │  │
-│  └──────────────────┬───────────────────────────┘  │
-└─────────────────────┼──────────────────────────────┘
-                      │
-┌─────────────────────▼──────────────────────────────┐
-│                   引擎层 (Engine)                      │
-│                                                     │
-│  ┌───────────────┐  ┌───────────────┐              │
-│  │  Timeline     │  │  Renderer     │              │
-│  │  · clips[]    │  │  · ffmpeg     │              │
-│  │  · add/remove │  │  · concat     │              │
-│  │  · reorder    │  │  · transitions│              │
-│  │  · export JSON│  │  · speed ramp │              │
-│  └───────────────┘  └───────────────┘              │
-│                                                     │
-│  ┌───────────────┐  ┌───────────────┐              │
-│  │  MediaStore   │  │  ProjectIO    │              │
-│  │  · 视频索引    │  │  · save/load  │              │
-│  │  · 缩略图生成  │  │  · JSON 格式  │              │
-│  └───────────────┘  └───────────────┘              │
-│                                                     │
-│  纯 Python 库，零服务依赖，可独立测试和复用             │
-└─────────────────────────────────────────────────────┘
+                         ┌─ pipelines/game-highlight.yaml ─┐
+                         │  validate → audio → subtitle     │
+                         │  → compose → quality_check       │
+                         └────────────┬─────────────────────┘
+                                      │
+前端 (index.html)  ←WebSocket→  FastAPI 服务层  ←ffmpeg→  渲染引擎
+    │                                 │
+    ├ 视频预览 (HTML Video)           ├ NLU 解析 (LLM + 规则引擎)
+    ├ 时间轴 (Canvas 只读)            ├ Session 管理 + 持久化
+    ├ 对话面板                        ├ EditPlanner (标记优先)
+    ├ 管道进度 UI                     ├ SkillManager (技能匹配)
+    ├ LLM 配置面板                    ├ PipelineEngine (管道渲染)
+    └ 导出面板                        ├ Reviewer (CHAI 质检)
+                                      ├ AudioAnalyzer (BGM 节拍)
+                                      └ ReferenceAnalyzer (风格复刻)
 ```
 
 ### 分层原则
 
 | 层 | 职责 | 依赖方向 |
 |---|---|---|
-| 引擎层 | 纯逻辑：timeline 模型、ffmpeg 操作、JSON IO | 不依赖上层 |
-| 服务层 | 编排：会话管理、NLP 解析、操作路由 | 依赖引擎层 |
+| 引擎层 | 纯逻辑：timeline 模型、ffmpeg 操作、管道质检 | 不依赖上层 |
+| 服务层 | 编排：会话管理、NLU 解析、剪辑规划、BGM 分析 | 依赖引擎层 |
 | 前端层 | 展示：UI、WebSocket 通信 | 依赖服务层 API |
-
-**关键约束**：引擎层可以被前端直接 import（桌面版），也可以被 FastAPI 调用（网页版），接口完全一致。
 
 ---
 
-## 3. 引擎层核心模型（语言无关的数据结构）
+## 3. 服务层核心组件
+
+### 3.1 NLU 解析器（NLUParser）
+
+双层解析策略：
+1. **规则引擎优先** — 正则匹配常见指令（渲染/撤销/删除/提取/过渡），毫秒级响应
+2. **LLM 兜底** — 复杂意图（"把击杀片段慢放到 0.5 倍再加个闪白"）走 Ollama
+
+```python
+def parse(user_input: str, context: dict) -> dict:
+    # 1. compose 对话活跃中 → 直接视为 compose_answer
+    if context.get("compose_active"):
+        return {"action": "compose_answer", "answer": user_input}
+
+    # 2. 规则匹配
+    rule_result = self._rule_parse(user_input, context)
+    if rule_result and rule_result["action"] != "unknown":
+        return rule_result
+
+    # 3. LLM 兜底
+    return self._llm_parse(user_input, context)
+```
+
+### 3.2 剪辑规划器（EditPlanner）
+
+标记优先策略：
+- **有标记** → 秒级响应，直接基于标记时间点 + 用户意图生成方案
+- **无标记** → 调 LLM 分析视频场景 + 运动强度生成方案
+- **BGM 已加载** → 切点自动吸附到最近节拍，Drop 段硬切、低谷段淡入淡出
+
+```python
+class EditPlanner:
+    def propose_plan(self, analysis_summary, user_intent, duration) -> EditPlan
+
+class EditPlan:
+    title: str              # 方案标题
+    target_duration: str    # 目标时长
+    vibe: str               # 风格标签
+    structure: list[str]    # 段落结构
+    clips: list[ClipProposal]  # 具体切点
+    reasoning: str          # 决策理由
+```
+
+### 3.3 对话式自动规划（Compose Flow）
+
+状态机驱动，3 步引导：
+
+```
+stage: "style"   →  回答风格（热血/搞笑/文艺...）
+    ↓
+stage: "effect"  →  回答效果（闪白/慢动作/淡入淡出...）
+    ↓
+stage: "pace"    →  回答节奏（快节奏/慢→快/交替...）
+    ↓
+stage: "done"    →  生成方案 + 自动执行 + 返回时间轴
+```
+
+支持一步到位：说"帮我自动规划实现"直接走完全流程。
+
+### 3.4 BGM 分析器（AudioAnalyzer）
+
+- 节拍检测 — 基于 RMS 能量 + onset detection
+- Drop/Valley 段识别 — 能量分段聚类
+- 支持缓存（`.bgm_cache/`），避免重复分析
+
+切点吸附逻辑：
+
+```python
+nearest = bgm.nearest_beat(start)
+if abs(offset) < 0.3:  # 0.3s 以内吸附
+    start += offset
+
+# 终点落在 Drop 段 → 延长到 Drop 结束
+for d in bgm.drop_sections:
+    if d["start"] <= end <= d["end"] and (d["end"] - end) < 1.0:
+        end = d["end"]
+```
+
+### 3.5 技能系统（SkillManager）
+
+动态加载 `skills/` 目录下的 Markdown 技能文件。NLU 解析和规划器自动匹配触发词。
+
+```markdown
+# 触发规则（YAML frontmatter）
+triggers: ["高光", "集锦", "精彩"]
+always: false
+
+# 技能内容（Markdown body）
+## 高光混剪模板
+- 选取运动强度 peak > 0.7 的片段
+- 转场用 flash，0.3s，颜色 #FFE4B5
+- 结尾渐暗不收纯黑
+```
+
+---
+
+## 4. 引擎层核心模型
 
 ### Timeline
 
@@ -89,245 +150,221 @@
 @dataclass
 class Clip:
     id: str
-    source_path: str          # 源视频路径
-    source_start: float       # 源视频起始时间（秒）
-    source_end: float         # 源视频结束时间（秒）
-    speed: float = 1.0        # 变速倍率
-    volume: float = 1.0       # 音量
-    label: str = ""           # 用户标签
+    source_id: str
+    source_start: float
+    source_end: float
+    speed: float = 1.0
+    volume: float = 1.0
+    label: str = ""
 
 @dataclass
 class Transition:
     id: str
-    type: str                 # "cut" | "flash" | "dissolve" | "wipe"
+    effect: str           # "cut" | "flash" | "dissolve"
     duration: float = 0.3
-    params: dict = {}         # 过渡参数（颜色、方向等）
+    params: dict = {}
 
-@dataclass
-class TimelineItem:
-    """时间轴上的一个单元，可以是 Clip 或 Transition"""
-    item_type: str            # "clip" | "transition"
-    data: Clip | Transition
-
-@dataclass
 class Timeline:
-    items: list[TimelineItem]
-    fps: float = 30.0
-    total_duration: float = 0.0  # 计算属性
+    items: list[TimelineItem]  # 交替排列：clip → transition → clip
+    total_duration: float      # 计算属性
+    clip_count: int
 ```
 
-### 项目文件格式（Project JSON）
+### 管道引擎
 
-```json
-{
-  "version": "1.0",
-  "meta": {
-    "name": "我的剪辑",
-    "created": "2026-07-08T10:00:00",
-    "modified": "2026-07-08T11:30:00"
-  },
-  "sources": [
-    {"id": "src1", "path": "/videos/game.mp4", "fps": 60, "duration": 3600.0}
-  ],
-  "timeline": {
-    "items": [
-      {"type": "clip", "source_id": "src1", "start": 32.0, "end": 35.5, "speed": 0.5},
-      {"type": "transition", "effect": "flash", "duration": 0.3, "color": "#FFE4B5"},
-      {"type": "clip", "source_id": "src1", "start": 75.0, "end": 78.2, "speed": 1.0}
-    ]
-  },
-  "history": []
-}
+```yaml
+# pipelines/game-highlight.yaml
+stages:
+  - name: validate
+    produces: validation_report
+  - name: audio_prep
+    requires: [validation_report]
+    produces: audio_manifest
+  - name: subtitle
+    requires: [validation_report, audio_manifest]
+    produces: subtitle_manifest
+  - name: compose
+    requires: [validation_report, audio_manifest, subtitle_manifest]
+    produces: composition_report
+  - name: quality_check
+    requires: [composition_report]
+    produces: qc_report
 ```
 
-### 操作定义（引擎层 API）
+质检协议（CHAI）：
+- **Accurate** — 每条 Finding 指向具体字段/帧号
+- **Complete** — 扫描同类全貌
+- **Constructive** — critical 附带修复方案
+
+---
+
+## 5. 会话管理
 
 ```python
-class TimelineEngine:
-    def add_clip(self, source_id, start, end, **kwargs) -> str  # 返回 clip_id
-    def remove_item(self, item_id)
-    def reorder(self, item_id, new_index)
-    def update_clip(self, clip_id, **kwargs)  # 改 speed/volume/label
-    def add_transition(self, after_item_id, type, duration, **params)
-    def snapshot(self) -> dict  # 导出可序列化的状态
-    def render_preview(self, output_path) -> str  # 低分辨率预览
-    def render_final(self, output_path) -> str   # 完整渲染
-    def undo(self)
-    def redo(self)
+class EditSession:
+    id: str
+    timeline: Timeline
+    undo_manager: UndoManager
+    media_store: MediaStore
+    renderer: Renderer
+
+    # 新增 (v0.4)
+    planner: EditPlanner
+    markers: list[dict]           # 用户标记时间点
+    current_plan: EditPlan        # 当前剪辑方案
+    compose_state: dict           # 对话引导状态机
+    bgm_analysis: BgmAnalysis     # BGM 分析结果
+    emotion_map: dict             # 片段情绪标签
+
+    def propose_plan(intent)      # 生成方案（标记优先）
+    def execute_plan()            # 一键执行方案
+    def load_bgm(path)            # 加载 BGM + 节拍分析
+```
+
+持久化：`/tmp/conversational-editor/sessions/{session_id}.json`
+
+---
+
+## 6. API 设计
+
+### REST
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/upload` | 上传视频文件 |
+| POST | `/api/load-video` | 加载本地视频路径 |
+| GET | `/api/sessions` | 列出已保存项目 |
+| GET | `/api/session/{id}` | 获取项目信息 |
+| GET | `/api/frame/{id}?time=N` | 提取帧截图 |
+| GET | `/api/thumbnails/{id}` | 获取缩略图条带 |
+| POST | `/api/markers/{id}` | 同步标记数据 |
+| POST | `/api/render/{id}` | 触发管道渲染 |
+| GET | `/api/render/status/{id}` | 渲染进度 |
+| POST | `/api/render/cancel/{id}` | 取消渲染 |
+| POST | `/api/export/{id}` | 导出视频（多平台） |
+| POST | `/api/load-bgm/{id}` | 加载 BGM |
+| GET | `/api/bgm-beats/{id}` | 获取节拍数据 |
+| POST | `/api/analyze-reference` | 分析参考视频 |
+| POST | `/api/replicate-style` | 风格复刻 |
+| GET/POST | `/api/config` | LLM 配置 |
+| GET/POST | `/api/skills` | 技能管理 |
+
+### WebSocket
+
+```
+ws://host:8765/ws/{session_id}
+```
+
+消息类型：
+| type | 方向 | 说明 |
+|------|------|------|
+| `session_ready` | S→C | 连接建立 |
+| `user_message` | S→C | 用户消息回显 |
+| `edit_result` | S→C | 操作执行结果 + 时间轴状态 |
+| `compose_guide` | S→C | 对话引导问题 + 建议按钮 |
+| `compose_done` | S→C | 自动规划完成 |
+| `preview_ready` | S→C | 预览视频就绪 |
+| `error` | S→C | 错误信息 |
+
+---
+
+## 7. 对话指令支持
+
+```
+✅ "从 0:32 到 0:35 提取出来"
+✅ "这段放慢到 0.5 倍"
+✅ "中间加个 0.3 秒闪白"
+✅ "删掉最后一个片段"
+✅ "渲染预览"
+✅ "撤销"
+✅ "保存项目"
+✅ "这是永劫无间击杀集锦"          → 触发自动规划
+✅ "帮我自动规划实现"               → 一键全自动
+✅ "热血燃向" / "闪白转场" / "快节奏冲击"  → 对话式引导回答
 ```
 
 ---
 
-## 4. 初版定稿（MVP v1.0）
-
-### 范围
-
-| 包含 | 不含（后续版本） |
-|------|-----------------|
-| 加载单个视频 | 多源素材管理 |
-| 对话式剪辑操作 | AI 自动分析画面/语义搜索 |
-| cut / splice / speed / flash | 复杂转场 / 字幕 / BGM / 调色 |
-| 时间轴可视化（只读色块） | 可拖拽时间轴 |
-| WebSocket 实时交互 | 多人协作 |
-| 项目 save/load JSON | 导出视频格式选择 |
-| 操作 undo/redo | 操作历史分支 |
-
-### 支持的自然语言指令
-
-```
-✅ "从 0:32 到 0:35 提取出来"
-✅ "把这后面接上 1:15 到 1:20"
-✅ "中间加个 0.3 秒闪白"
-✅ "这段放慢到 0.5 倍"
-✅ "删掉最后一个片段"
-✅ "把第 2 段和第 3 段换位置"
-✅ "渲染预览"
-✅ "撤销"
-✅ "保存项目"
-```
-
-### 对话流程示例
-
-```
-用户: 加载 game.mp4
-AI:   已加载 game.mp4（60fps，60分钟）
-
-用户: 从 0:32 到 0:35 提取
-AI:   ✅ 已添加片段 #1（0:32 → 0:35，3.0s）
-     [时间轴显示色块 #1]
-
-用户: 这段放慢 0.5 倍
-AI:   ✅ 片段 #1 速度改为 0.5x（6.0s）
-
-用户: 再接上 1:15 到 1:20
-AI:   ✅ 已添加片段 #2（1:15 → 1:20，5.0s）
-     [时间轴追加色块 #2]
-
-用户: 渲染预览
-AI:   🔄 渲染中...
-     📼 预览视频已就绪（11.0s）
-```
-
-### 前端 UI 布局
-
-```
-┌──────────────────────────────────────────────┐
-│  Logo    对话式剪辑工作台         [保存] [导出]  │
-├──────────────┬───────────────────┬───────────┤
-│              │                   │           │
-│   视频预览    │   时间轴可视化      │  素材列表  │
-│              │                   │           │
-│  [▶️ 播放]   │  ██ ▓▓ ████ ▓▓   │  game.mp4 │
-│              │  #1  t  #2  t     │           │
-│              │                   │           │
-│              │                   │           │
-├──────────────┴───────────────────┴───────────┤
-│  💬 输入指令...                        [发送]  │
-│                                              │
-│  历史:                                       │
-│  > 从 0:32 到 0:35 提取                      │
-│  ✅ 已添加片段 #1（3.0s）                     │
-│  > 这段放慢 0.5 倍                            │
-│  ✅ 片段 #1 速度 0.5x                        │
-└──────────────────────────────────────────────┘
-```
-
-### 技术选型 MVP
+## 8. 技术选型
 
 | 组件 | 选型 | 理由 |
 |------|------|------|
 | 后端框架 | FastAPI + uvicorn | 异步 + WebSocket 原生支持 |
-| 前端 | 单 HTML + 原生 JS + 少量 CSS | 零构建，直接 serve |
-| 通信 | WebSocket | 实时双向，操作→预览延迟最低 |
-| 视频播放 | `<video>` 标签 | 浏览器原生，H.264 |
-| 时间轴 | Canvas 2D | 色块绘制，无需 SVG 库 |
-| 渲染 | ffmpeg subprocess | 稳定可靠，concat demuxer |
-| NLU | Ollama qwen3.6-27b | 本地已有，中文理解力够 |
-| 存储 | JSON 文件 | 项目同级目录，Git 友好 |
+| 前端 | 单 HTML + 原生 JS + CSS | 零构建，直接 serve |
+| 通信 | WebSocket | 实时双向 |
+| 视频播放 | `<video>` 标签 | 浏览器原生 H.264 |
+| 时间轴 | Canvas 2D | 色块绘制 |
+| 渲染 | ffmpeg subprocess | 稳定可靠 |
+| NLU | Ollama (qwen3.5:9b) + 规则引擎 | 本地推理，离线兜底 |
+| 存储 | JSON 文件 | Git 友好 |
+| BGM 分析 | librosa + numpy | Python 生态 |
 
 ---
 
-## 5. 目录结构
+## 9. 目录结构
 
 ```
 conversational-editor/
-├── engine/                    # 引擎层（纯 Python，零依赖）
+├── engine/                         # 引擎层（纯 Python）
 │   ├── __init__.py
-│   ├── timeline.py           # Timeline / Clip / Transition 模型
-│   ├── renderer.py           # ffmpeg 渲染封装
-│   ├── media.py              # 视频元数据提取、缩略图
-│   └── project.py            # JSON 读写
+│   ├── timeline.py                 # Timeline / Clip / Transition
+│   ├── renderer.py                 # ffmpeg 渲染
+│   ├── media.py                    # 视频元数据、缩略图
+│   ├── project.py                  # JSON 读写
+│   ├── pipeline.py                 # 管道引擎
+│   ├── reviewer.py                 # CHAI 质检
+│   └── artifact.py                 # Artifact 数据模型
 │
-├── server/                    # 服务层
+├── server/                         # 服务层
 │   ├── __init__.py
-│   ├── main.py               # FastAPI + WebSocket 入口
-│   ├── session.py            # SessionManager（多项目管理）
-│   ├── nlu.py                # 指令解析（Ollama prompt）
-│   ├── executor.py           # 操作执行 + undo/redo 栈
-│   └── schemas.py            # Pydantic 请求/响应模型
+│   ├── main.py                     # FastAPI + WebSocket 入口
+│   ├── session.py                  # SessionManager + EditSession
+│   ├── nlu.py                      # NLU 解析（LLM + 规则）
+│   ├── nlu_fix.py                  # 中文数字解析辅助
+│   ├── planner.py                  # AI 剪辑规划器
+│   ├── skills_manager.py           # 技能系统
+│   ├── analyzer.py                 # 视频场景分析
+│   ├── reference_analyzer.py       # 参考视频风格分析
+│   ├── audio.py                    # BGM 音频分析
+│   ├── llm_config.py               # LLM 配置管理
+│   ├── model_fetch.py              # 模型列表获取
+│   └── schemas.py                  # Pydantic 模型
 │
-├── web/                       # 前端层
-│   ├── index.html            # 单页应用
-│   ├── css/
-│   │   └── style.css
-│   └── js/
-│       ├── app.js            # 主入口
-│       ├── player.js         # 视频播放控制
-│       ├── timeline.js       # Canvas 时间轴渲染
-│       ├── chat.js           # 对话面板 + WebSocket
-│       └── state.js          # 前端状态管理（镜像 Timeline）
+├── web/
+│   └── index.html                  # 单页应用
 │
-├── config.yaml               # 服务器配置（Ollama IP、端口等）
+├── skills/                         # 技能定义
+│   ├── user-preferences.md
+│   ├── rhythm-cut.md
+│   ├── highlight-montage.md
+│   └── comedy-montage.md
+│
+├── pipelines/                      # 渲染管道
+│   └── game-highlight.yaml
+│
+├── config.yaml
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## 6. 后续优化路线
+## 10. 版本历史
 
-### v1.1 — 编辑能力增强
-- 字幕：Whisper 识别 → 时间轴编辑 → 烧录
-- BGM：选择/截取/音量混合
-- 更多转场：dissolve、wipe、slide
-- 片段复制/分割
-- 导出格式选择（mp4/gif）
-
-### v1.2 — 智能辅助
-- AI 画面分析：选中帧 → minicpm-v 描述 → 辅助定位素材
-- 语义搜索：「找到有击杀的片段」
-- 自动节拍检测：BGM 配切点
-- 片段缩略图预览（hover 时间轴）
-
-### v1.3 — 工作流增强
-- 多源素材管理（加载多个视频）
-- 操作历史可视化分支
-- 快捷键绑定（手动操作 escape hatch）
-- 渲染队列（后台批量）
-
-### v2.0 — 桌面版（Tauri 封装）
-- 引擎层直接复用（Python 通过 sidecar 调用）
-- 前端复用，Tauri WebView 加载
-- 原生文件对话框、系统通知
-- 本地 GPU 加速渲染
-
-### v2.x — 社区方向
-- EDITSTYLE.md（可分享的剪辑风格模板）
-- MCP Server（让其他 AI Agent 调剪辑能力）
-- 插件系统（自定义转场/效果）
+| 版本 | 内容 |
+|------|------|
+| 0.4.0 | 对话式自动规划（标记优先 + BGM 节拍对齐 + 一键全自动） |
+| 0.3.0 | 声明式管道架构（Artifact + Reviewer + PipelineEngine + CHAI 质检） |
+| 0.2.0 | P0-P2 完整实现（渲染/导出/持久化/xfade/参考视频/风格指纹） |
+| 0.1.0 | MVP（视频加载 + NLU 对话 + 基础渲染） |
 
 ---
 
-## 7. 风险与应对
+## 11. 风险与应对
 
 | 风险 | 应对 |
 |------|------|
-| NLU 解析不准 | 指令失败时展示解析结果让用户确认/修正；提供快捷按钮 fallback |
-| ffmpeg 渲染慢 | 预览用低分辨率（480p）proxy；最终渲染异步后台 |
-| 浏览器视频解码限制 | 素材自动转码为 H.264 baseline；大文件分段加载 |
-| Ollama 离线 | 规则引擎 fallback（关键词匹配基础指令） |
-| 竞品加速追赶 | 聚焦「精确剪辑级对话」差异化，不在自动成片赛道竞争 |
-
----
-
-**初版预计工时**：3-5 天（引擎 1 天 + 服务层 1 天 + 前端 2 天 + 联调 1 天）
+| NLU 解析不准 | 规则引擎优先匹配常见模式；失败时 LLM 兜底 |
+| ffmpeg 渲染慢 | 预览用低分辨率 proxy；最终渲染异步后台 |
+| Ollama 离线 | 规则引擎 fallback；标记秒出方案不依赖 LLM |
+| BGM 节拍检测不准 | 缓存分析结果；提供手动微调入口 |

@@ -71,13 +71,12 @@ def _handle_validate(stage_config: dict, session, inputs: dict, ckpt_dir: Path) 
 
 
 def _handle_audio_prep(stage_config: dict, session, inputs: dict, ckpt_dir: Path) -> AudioManifest:
-    """音频准备：提取、分析"""
+    """音频准备：BGM 分析 + 视频原声提取"""
     tracks = []
     silence_segments = []
     source_path = session.source_path
 
     if source_path:
-        # 提取音频信息（不生成文件，只做探测）
         tracks.append({
             "type": "dialogue",
             "path": source_path,
@@ -85,14 +84,39 @@ def _handle_audio_prep(stage_config: dict, session, inputs: dict, ckpt_dir: Path
             "peak_db": -3.0,
         })
 
+    bgm_path = ""
+    bgm_volume = -12.0
+    bgm_duration = 0.0
+    dialogue_to_bgm = 4.0
+
+    # 如果有 BGM，使用真实分析数据
+    if session.bgm_analysis:
+        bgm = session.bgm_analysis
+        bgm_path = bgm.path
+        bgm_duration = bgm.duration
+        
+        # 计算对白/BGM 音量比：取波形中位数作为估算
+        if bgm.waveform:
+            import statistics
+            median_energy = statistics.median(bgm.waveform)
+            # 中等能量 = BGM 正常音量 → 约 -12dB
+            dialogue_to_bgm = 4.0 if median_energy < 0.4 else 3.0  # 高能 BGM 时比例调紧
+
+        # 标记 BGM 低谷段为潜在静音
+        if bgm.valley_sections:
+            silence_segments = [
+                {"start": v["start"], "end": v["end"], "type": "bgm_valley"}
+                for v in bgm.valley_sections
+            ]
+
     return AudioManifest(
         stage_name="audio_prep",
         tracks=tracks,
-        bgm_path="",
-        bgm_volume_db=-12.0,
+        bgm_path=bgm_path,
+        bgm_volume_db=bgm_volume,
         silence_segments=silence_segments,
         peak_level=-3.0,
-        dialogue_to_bgm_ratio=4.0,
+        dialogue_to_bgm_ratio=dialogue_to_bgm,
     )
 
 
@@ -123,20 +147,44 @@ def _handle_subtitle(stage_config: dict, session, inputs: dict, ckpt_dir: Path) 
 
 
 def _handle_compose(stage_config: dict, session, inputs: dict, ckpt_dir: Path) -> CompositionReport:
-    """视频合成：拼接片段 + 转场 + 编码"""
+    """视频合成：拼接片段 + 转场 + BGM 混音 + 音频闪避"""
     import subprocess, tempfile, os
 
     timeline = session.timeline
     sources = {session.current_source_id: session.source_path}
     output = ckpt_dir / f"compose_output_{session.id}.mp4"
 
-    # 使用渲染器的 concat 方式
+    # 1. 拼接视频片段
     concat_file = session.renderer._build_concat_script(timeline, sources)
 
-    cmd = [
-        "ffmpeg", "-y", "-v", "error",
-        "-f", "concat", "-safe", "0",
-        "-i", concat_file,
+    # 2. 构建 ffmpeg 命令
+    cmd = ["ffmpeg", "-y", "-v", "error"]
+
+    # 视频输入
+    cmd += ["-f", "concat", "-safe", "0", "-i", concat_file]
+
+    # BGM 输入（如果有）
+    bgm_path = ""
+    if session.bgm_path and os.path.exists(session.bgm_path):
+        bgm_path = session.bgm_path
+        cmd += ["-stream_loop", "-1", "-i", bgm_path]
+
+    has_bgm = bool(bgm_path)
+
+    # 构建 filter_complex
+    if has_bgm:
+        # 音频闪避：标记为 dialogue 的片段压 BGM
+        duck_filter = _build_duck_filter(session, bgm_path)
+        filter_str = (
+            f"[0:a]volume=1.0[vid_a];"
+            f"[1:a]{duck_filter}[bgm_a];"
+            f"[vid_a][bgm_a]amix=inputs=2:duration=first:weights=1.0 0.7[out_a]"
+        )
+        cmd += ["-filter_complex", filter_str, "-map", "0:v", "-map", "[out_a]"]
+    else:
+        cmd += ["-map", "0:v", "-map", "0:a?"]
+
+    cmd += [
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-c:a", "aac",
         "-movflags", "+faststart",
@@ -150,7 +198,6 @@ def _handle_compose(stage_config: dict, session, inputs: dict, ckpt_dir: Path) -
 
     file_size = output.stat().st_size if output.exists() else 0
 
-    # 获取输出时长
     duration = timeline.total_duration
     try:
         probe = subprocess.run(
@@ -170,9 +217,42 @@ def _handle_compose(stage_config: dict, session, inputs: dict, ckpt_dir: Path) -
         output_duration=duration,
         expected_duration=timeline.total_duration,
         file_size_bytes=file_size,
-        encoding_params={"codec": "libx264", "crf": 28, "preset": "ultrafast"},
+        encoding_params={"codec": "libx264", "crf": 28, "preset": "ultrafast",
+                        "bgm": bool(bgm_path), "audio_ducking": has_bgm},
         xfade_transitions=sum(1 for i in timeline.items if i.item_type == "transition"),
     )
+
+
+def _build_duck_filter(session, bgm_path: str) -> str:
+    """构建音频闪避过滤器：对话段 BGM 压低到 25%，动作段推到 100%"""
+    if not hasattr(session, 'emotion_map') or not session.emotion_map:
+        # 无情绪标记 → 中性处理
+        return "volume=0.6"
+
+    timeline = session.timeline
+    segments = []
+    for i, item in enumerate(timeline.items):
+        if item.item_type != "clip":
+            continue
+        emotion = session.emotion_map.get(i, "action")
+        clip_start = sum(
+            (t.data.output_duration for t in timeline.items[:i]
+             if t.item_type == "clip"), 0.0
+        )
+        dur = item.data.output_duration
+        volume = "0.25" if emotion == "dialogue" else "1.0"
+        segments.append(
+            f"volume='if(between(t,{clip_start:.3f},{clip_start+dur:.3f}),{volume},1)':eval=frame"
+        )
+
+    if not segments:
+        return "volume=0.7"
+
+    # 链式：先在静默段给默认值，再逐段覆盖
+    chained = "volume=0.7"
+    for seg in segments:
+        chained += "," + seg
+    return chained
 
 
 def _handle_quality_check(stage_config: dict, session, inputs: dict, ckpt_dir: Path) -> QCReport:
@@ -293,7 +373,7 @@ class PipelineEngine:
         total = len(stages)
         results: list[StageResult] = []
         artifacts: dict[str, Artifact] = {}
-        checkpoint_dir = Path(f"/tmp/conversational-editor/pipelines/{session.id}")
+        checkpoint_dir = Path(f"/tmp/conversational-editor/checkpoints/{session.id}")
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         on_stage_start = callbacks.get("on_stage_start")

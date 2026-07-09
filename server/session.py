@@ -29,6 +29,9 @@ class EditSession:
         self.render_state: str = "idle"  # idle | rendering | done | error
         self.render_progress: float = 0.0
         self.render_cancelled: bool = False
+        self.bgm_path: str = ""  # 背景音乐文件路径
+        self.bgm_analysis = None  # BgmAnalysis 对象
+        self.emotion_map: dict[int, str] = {}  # 片段索引 → 情绪标签 (dialogue/action/calm/highlight)
 
     def load_video(self, filepath: str) -> dict:
         info = self.media_store.probe(filepath)
@@ -50,6 +53,40 @@ class EditSession:
             result["analysis"] = None
 
         return result
+
+    def load_bgm(self, filepath: str) -> dict:
+        """加载背景音乐，分析节拍和能量结构"""
+        from .audio import AudioAnalyzer, save_analysis, load_analysis
+        analyzer = AudioAnalyzer()
+        
+        # 先用缓存
+        self.bgm_analysis = load_analysis(filepath)
+        if self.bgm_analysis:
+            self.bgm_path = filepath
+            return self._bgm_result()
+
+        # 分析
+        self.bgm_analysis = analyzer.analyze(filepath)
+        self.bgm_path = filepath
+        save_analysis(self.bgm_analysis)
+        return self._bgm_result()
+
+    def _bgm_result(self) -> dict:
+        """生成 BGM 分析摘要"""
+        a = self.bgm_analysis
+        if not a:
+            return {"success": False, "message": "未加载 BGM"}
+        return {
+            "success": True,
+            "duration": a.duration,
+            "beat_count": len(a.beats),
+            "drop_count": len(a.drop_sections),
+            "valley_count": len(a.valley_sections),
+            "drop_sections": a.drop_sections,
+            "valley_sections": a.valley_sections,
+            "beats": [{"time": b.time, "strength": b.strength, "is_drop": b.is_drop}
+                      for b in a.beats[:50]],  # 只返回前 50 个防止过大
+        }
 
     def propose_plan(self, user_intent: str) -> dict:
         """AI 生成剪辑方案 — 有标记时秒出，无标记时调 LLM"""
@@ -83,7 +120,7 @@ class EditSession:
         }
 
     def _quick_plan_from_markers(self, intent: str) -> dict:
-        """基于标记秒出方案 — 标记有范围时直接用范围，否则默认±窗口"""
+        """基于标记秒出方案 — 如果 BGM 已加载，切点自动对齐到节拍"""
         markers = sorted(self.markers, key=lambda m: m.get("start", m.get("time", 0)))
         
         # 确定风格：从 compose_state 或 intent 中提取
@@ -98,37 +135,14 @@ class EditSession:
             }
             vibe = next((v for k, v in vibe_map.items() if k in intent), "混剪")
 
-        # 从 compose_state 读取用户指定的参数
         user_effect = self.compose_state.get("effect", "")
         user_pace = self.compose_state.get("pace", intent)
 
-        clips = []
-        for i, m in enumerate(markers):
-            label = m.get("label") or f"片段{i+1}"
-            # 使用标记范围（如果有 start/end），否则用 time 推算默认窗口
-            if "start" in m and "end" in m:
-                start, end = m["start"], m["end"]
-            elif "time" in m:
-                start = max(0, m["time"] - 1.0)
-                end = min(m["time"] + 2.0, (self.analysis.duration if self.analysis else 999))
-            else:
-                continue
-
-            # 根据节奏调整 speed
-            if "慢放" in user_pace or "慢" in user_pace:
-                speed = 0.5
-            elif "快" in user_pace or "燃" in user_pace:
-                speed = 1.2
-            else:
-                speed = 1.0
-
-            # 根据效果决定过渡
-            trans = ""
-            if "闪白" in user_effect or "燃" in vibe or "高光" in vibe:
-                trans = "flash"
-            elif "淡入" in user_effect or "文艺" in vibe:
-                trans = "dissolve"
-            clips.append({"start": start, "end": end, "label": label, "speed": speed, "transition_after": trans})
+        # BGM 已加载 → 切点对齐到最近节拍
+        if self.bgm_analysis and self.bgm_analysis.beats:
+            clips = self._clips_aligned_to_beats(markers, user_pace, user_effect, vibe)
+        else:
+            clips = self._clips_freeform(markers, user_pace, user_effect, vibe)
 
         plan = EditPlan(
             title=intent,
@@ -136,22 +150,85 @@ class EditSession:
             vibe=vibe,
             structure=[f"片段{i+1}" for i in range(len(clips))],
             clips=[ClipProposal(**c) for c in clips],
-            reasoning=f"基于 {len(markers)} 个标记点自动生成",
+            reasoning=f"基于 {len(markers)} 个标记点{' + BGM节拍对齐' if self.bgm_analysis else ''}自动生成",
         )
         self.current_plan = plan
-
         return {
             "success": True,
             "plan": {
-                "title": plan.title,
-                "vibe": plan.vibe,
+                "title": plan.title, "vibe": plan.vibe,
                 "target_duration": plan.target_duration,
-                "structure": plan.structure,
-                "clips": clips,
+                "structure": plan.structure, "clips": clips,
                 "reasoning": plan.reasoning,
             },
             "display": self.planner.format_plan_display(plan),
         }
+
+    def _clips_aligned_to_beats(self, markers, pace, effect, vibe) -> list[dict]:
+        """BGM 节拍对齐：每个标记切点吸附到最近的节拍/Drop 点"""
+        bgm = self.bgm_analysis
+        clips = []
+        for i, m in enumerate(markers):
+            label = m.get("label") or f"片段{i+1}"
+            if "start" in m and "end" in m:
+                start, end = m["start"], m["end"]
+            elif "time" in m:
+                start, end = max(0, m["time"] - 1.0), m["time"] + 2.0
+            else:
+                continue
+
+            # 吸附到最近强拍
+            nearest = bgm.nearest_beat(start)
+            if nearest:
+                offset = nearest.time - start
+                if abs(offset) < 0.3:  # 0.3s 以内吸附
+                    start += offset
+                    end += offset
+            # 如果终点落在 Drop 段，延长到 Drop 结束
+            for d in bgm.drop_sections:
+                if d["start"] <= end <= d["end"] and (d["end"] - end) < 1.0:
+                    end = d["end"]
+                    break
+
+            speed = 0.5 if ("慢放" in pace or "慢" in pace) else (1.2 if ("快" in pace or "燃" in pace) else 1.0)
+            trans = self._transition_for_energy(start, end, effect, vibe)
+            clips.append({"start": start, "end": end, "label": label, "speed": speed, "transition_after": trans})
+        return clips
+
+    def _clips_freeform(self, markers, pace, effect, vibe) -> list[dict]:
+        """无 BGM 时自由切点"""
+        clips = []
+        for i, m in enumerate(markers):
+            label = m.get("label") or f"片段{i+1}"
+            if "start" in m and "end" in m:
+                start, end = m["start"], m["end"]
+            elif "time" in m:
+                start, end = max(0, m["time"] - 1.0), m["time"] + 2.0
+            else:
+                continue
+            speed = 0.5 if ("慢放" in pace or "慢" in pace) else (1.2 if ("快" in pace or "燃" in pace) else 1.0)
+            trans = ""
+            if "闪白" in effect or "燃" in vibe or "高光" in vibe:
+                trans = "flash"
+            elif "淡入" in effect or "文艺" in vibe:
+                trans = "dissolve"
+            clips.append({"start": start, "end": end, "label": label, "speed": speed, "transition_after": trans})
+        return clips
+
+    def _transition_for_energy(self, start: float, end: float, effect: str, vibe: str) -> str:
+        """基于 BGM 能量段决定转场类型"""
+        bgm = self.bgm_analysis
+        if not bgm:
+            return ""
+        # 检查片段中点落在哪个能量段
+        mid = (start + end) / 2
+        for d in bgm.drop_sections:
+            if d["start"] <= mid <= d["end"]:
+                return "cut"  # Drop 段硬切不打断节奏
+        for v in bgm.valley_sections:
+            if v["start"] <= mid <= v["end"]:
+                return "dissolve"  # 低谷段淡入淡出
+        return "flash" if ("燃" in vibe or "高光" in vibe) else ""
 
     def execute_plan(self) -> dict:
         """一键执行当前方案"""
@@ -374,7 +451,8 @@ class EditSession:
                         result["timeline"] = self.timeline.to_list()
                         self.compose_state = {}
                     else:
-                        # 开始对话引导
+                        # 初始化状态机，开始对话引导
+                        self.compose_state = {"stage": "style"}
                         result["action"] = "compose_guide"
                         result["compose_stage"] = self._get_compose_question()
                         result["message"] = result["compose_stage"]["question"]
@@ -395,13 +473,15 @@ class EditSession:
                     self.compose_state["stage"] = "done"
                 
                 if self.compose_state["stage"] == "done":
-                    # 所有问题答完，生成方案
+                    # 所有问题答完，生成方案并自动执行
                     plan_result = self._quick_plan_from_markers(self.compose_state.get("style", "AI初稿"))
+                    exec_result = self.execute_plan()
                     result["action"] = "compose_done"
                     result["plan"] = plan_result.get("plan", {})
                     result["display"] = plan_result.get("display", "")
-                    result["message"] = f"根据你的偏好（风格: {self.compose_state.get('style','')} / 效果: {self.compose_state.get('effect','')} / 节奏: {self.compose_state.get('pace','')}），生成了方案："
+                    result["message"] = exec_result.get("message", "")
                     result["timeline"] = self.timeline.to_list()
+                    result["clip_count"] = self.timeline.clip_count
                     self.compose_state = {}
                 else:
                     result["action"] = "compose_guide"
@@ -448,12 +528,18 @@ class EditSession:
 
     def get_context(self) -> dict:
         """获取当前上下文供 NLU 使用"""
-        return {
+        ctx = {
             "clip_count": self.timeline.clip_count,
             "total_duration": self.timeline.total_duration,
             "timeline_items": self.timeline.to_list(),
-            "markers": self.markers,  # 用户标记的时间点
+            "markers": self.markers,
         }
+        if self.bgm_analysis:
+            ctx["bgm_loaded"] = True
+            ctx["bgm_duration"] = self.bgm_analysis.duration
+            ctx["bgm_beat_count"] = len(self.bgm_analysis.beats)
+            ctx["bgm_drop_sections"] = self.bgm_analysis.drop_sections
+        return ctx
 
     def _get_compose_question(self) -> dict:
         """获取对话式引导的当前问题"""
